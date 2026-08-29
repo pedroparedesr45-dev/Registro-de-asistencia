@@ -1,0 +1,8 @@
+streamlit
+supabase
+pandas
+numpy
+openpyxl
+plotly
+Pillow
+streamlit-js-eval
