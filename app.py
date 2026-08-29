@@ -612,6 +612,83 @@ def enviar_backup_email(asunto, cuerpo, adjuntos):
         server.send_message(msg)
 
 
+def cargar_configuracion_sistema(supabase, empresa_id):
+    """Carga PINs, clave de Excel y contraseña por defecto desde Supabase
+    para esta empresa (tabla configuracion_sistema). Si no hay fila
+    guardada todavía, deja los valores que ya estaban en session_state
+    (los de Secrets o los de respaldo)."""
+    if not supabase:
+        return
+    try:
+        res = (
+            supabase.table("configuracion_sistema")
+            .select("*")
+            .eq("empresa_id", str(empresa_id))
+            .limit(1)
+            .execute()
+        )
+        if res.data:
+            cfg = res.data[0]
+            if cfg.get("pin_admin"):
+                st.session_state.pin_admin = cfg["pin_admin"]
+            if cfg.get("pin_visor"):
+                st.session_state.pin_visor = cfg["pin_visor"]
+            if cfg.get("pin_master"):
+                st.session_state.pin_master = cfg["pin_master"]
+            if cfg.get("clave_excel"):
+                st.session_state.clave_excel = cfg["clave_excel"]
+    except Exception:
+        pass  # si falla, se sigue usando lo que ya había cargado
+
+
+def guardar_configuracion_sistema(supabase, empresa_id, **campos):
+    """Guarda (crea o actualiza) los PINs/clave de esta empresa en
+    Supabase, para que el cambio persista de verdad entre sesiones y
+    redespliegues."""
+    if not supabase:
+        raise RuntimeError("El cliente de Supabase no está configurado.")
+    datos = {"empresa_id": str(empresa_id), **campos}
+    supabase.table("configuracion_sistema").upsert(
+        datos, on_conflict="empresa_id"
+    ).execute()
+
+
+def obtener_password_empleado(supabase, empresa_id, dni, password_csv):
+    """Devuelve la contraseña vigente de un trabajador: si tiene una
+    contraseña propia guardada en Supabase (porque la cambió), usa esa;
+    si no, usa la que viene del CSV local (la que le asignó el admin)."""
+    if supabase:
+        try:
+            res = (
+                supabase.table("empleados_passwords")
+                .select("password")
+                .eq("empresa_id", str(empresa_id))
+                .eq("dni", str(dni))
+                .limit(1)
+                .execute()
+            )
+            if res.data:
+                return res.data[0]["password"]
+        except Exception:
+            pass
+    return password_csv
+
+
+def guardar_password_empleado(supabase, empresa_id, dni, nueva_password):
+    """Guarda la nueva contraseña que un trabajador eligió, de forma
+    persistente en Supabase (para que sobreviva a los redespliegues)."""
+    if not supabase:
+        raise RuntimeError("El cliente de Supabase no está configurado.")
+    datos = {
+        "empresa_id": str(empresa_id),
+        "dni": str(dni),
+        "password": nueva_password,
+    }
+    supabase.table("empleados_passwords").upsert(
+        datos, on_conflict="empresa_id,dni"
+    ).execute()
+
+
 def cargar_datos(empresa_id):
     cargar_empresas()
 
@@ -1471,6 +1548,8 @@ if opcion == "⏰ Marcar Asistencia":
                 else [],
                 key="empresa_admin_movil",
             )
+            if empresa_admin_mov:
+                cargar_configuracion_sistema(supabase, empresa_admin_mov)
             pin_mov = st.text_input(
                 "PIN de Acceso:", type="password", key="pin_admin_movil"
             )
@@ -1530,13 +1609,22 @@ if opcion == "⏰ Marcar Asistencia":
                         ) = cargar_datos(st.session_state.empresa_id)
 
                         emp_match = df_empleados_emp[
-                            (df_empleados_emp["dni"].astype(str) == dni_input.strip())
-                            & (
-                                df_empleados_emp["password"].astype(str)
-                                == pass_input.strip()
-                            )
+                            df_empleados_emp["dni"].astype(str)
+                            == dni_input.strip()
                         ]
+                        login_ok = False
                         if not emp_match.empty:
+                            fila_emp = emp_match.iloc[0]
+                            password_vigente = obtener_password_empleado(
+                                supabase,
+                                st.session_state.empresa_id,
+                                fila_emp["dni"],
+                                str(fila_emp["password"]),
+                            )
+                            login_ok = (
+                                str(password_vigente) == pass_input.strip()
+                            )
+                        if login_ok:
                             st.session_state.emp_login_ok = True
                             st.session_state.emp_datos = emp_match.iloc[0]
                             st.success("Acceso verificado correctamente.")
@@ -1561,6 +1649,53 @@ if opcion == "⏰ Marcar Asistencia":
                 st.session_state.emp_login_ok = False
                 st.session_state.emp_datos = None
                 st.rerun()
+
+        st.divider()
+
+        with st.expander("🔑 Cambiar mi Contraseña"):
+            pass_actual = st.text_input(
+                "Contraseña actual:", type="password", key="cambio_pass_actual"
+            )
+            pass_nueva = st.text_input(
+                "Nueva contraseña:", type="password", key="cambio_pass_nueva"
+            )
+            pass_nueva_confirmar = st.text_input(
+                "Confirma la nueva contraseña:",
+                type="password",
+                key="cambio_pass_confirmar",
+            )
+            if st.button("Actualizar Contraseña", key="btn_cambiar_pass"):
+                password_vigente_actual = obtener_password_empleado(
+                    supabase,
+                    st.session_state.empresa_id,
+                    datos_emp["dni"],
+                    str(datos_emp["password"]),
+                )
+                if str(password_vigente_actual) != pass_actual.strip():
+                    st.error("La contraseña actual no es correcta.")
+                elif not pass_nueva.strip():
+                    st.warning("Escribe la nueva contraseña.")
+                elif pass_nueva.strip() != pass_nueva_confirmar.strip():
+                    st.error("Las dos contraseñas nuevas no coinciden.")
+                elif not supabase:
+                    st.warning(
+                        "No se pudo guardar: el cliente de Supabase no"
+                        " está configurado."
+                    )
+                else:
+                    try:
+                        guardar_password_empleado(
+                            supabase,
+                            st.session_state.empresa_id,
+                            datos_emp["dni"],
+                            pass_nueva.strip(),
+                        )
+                        st.success(
+                            "✅ Contraseña actualizada. Úsala la próxima vez"
+                            " que inicies sesión."
+                        )
+                    except Exception as e_pass:
+                        st.error(f"No se pudo guardar el cambio: {e_pass}")
 
         st.divider()
 
@@ -1812,6 +1947,8 @@ elif opcion == "🔐 Panel de Gestión / Admin":
             if not df_e_disponibles.empty
             else [],
         )
+        if empresa_admin:
+            cargar_configuracion_sistema(supabase, empresa_admin)
         pin = st.text_input("Ingrese PIN de Acceso:", type="password")
 
         if st.button("Ingresar al Panel"):
@@ -3214,14 +3351,60 @@ elif opcion == "🔐 Panel de Gestión / Admin":
 
                 with subtab_seguridad:
                     st.markdown("#### 🔑 Administración de Claves de Acceso")
-                    p_admin = st.text_input("PIN Administrador:", value=st.session_state.pin_admin, type="password")
-                    p_visor = st.text_input("PIN Visor:", value=st.session_state.pin_visor, type="password")
-                    p_master = st.text_input("PIN Master:", value=st.session_state.pin_master, type="password")
-                    c_excel = st.text_input("Clave de Protección Excel:", value=st.session_state.clave_excel, type="password")
+                    st.caption(
+                        "Estos cambios se guardan en Supabase y aplican a"
+                        f" la empresa `{st.session_state.empresa_id}`."
+                    )
+
+                    p_admin = st.text_input(
+                        "PIN SuperAdmin:",
+                        value=st.session_state.pin_admin,
+                        type="password",
+                    )
+                    p_visor = st.text_input(
+                        "PIN Admin:",
+                        value=st.session_state.pin_visor,
+                        type="password",
+                    )
+
+                    if st.session_state.rol == "master":
+                        p_master = st.text_input(
+                            "PIN Developer:",
+                            value=st.session_state.pin_master,
+                            type="password",
+                        )
+                    else:
+                        p_master = st.session_state.pin_master
+                        st.caption(
+                            "🔒 El PIN Developer solo es visible y editable"
+                            " para quien ingresa con esa clave."
+                        )
+
+                    c_excel = st.text_input(
+                        "Clave de Protección Excel:",
+                        value=st.session_state.clave_excel,
+                        type="password",
+                    )
 
                     if st.button("Guardar Nuevas Claves"):
-                        st.session_state.pin_admin = p_admin
-                        st.session_state.pin_visor = p_visor
-                        st.session_state.pin_master = p_master
-                        st.session_state.clave_excel = c_excel
-                        st.success("Configuración de seguridad actualizada correctamente.")
+                        try:
+                            guardar_configuracion_sistema(
+                                supabase,
+                                st.session_state.empresa_id,
+                                pin_admin=p_admin,
+                                pin_visor=p_visor,
+                                pin_master=p_master,
+                                clave_excel=c_excel,
+                            )
+                            st.session_state.pin_admin = p_admin
+                            st.session_state.pin_visor = p_visor
+                            st.session_state.pin_master = p_master
+                            st.session_state.clave_excel = c_excel
+                            st.success(
+                                "✅ Configuración de seguridad actualizada y"
+                                " guardada en Supabase."
+                            )
+                        except Exception as e_cfg:
+                            st.error(
+                                f"No se pudo guardar en Supabase: {e_cfg}"
+                            )
