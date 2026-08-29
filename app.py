@@ -442,6 +442,96 @@ def cargar_empresas():
         return df_init
 
 
+COLUMNAS_ASISTENCIA = [
+    "empresa_id",
+    "Fecha",
+    "Empleado",
+    "Tipo Marcación",
+    "Hora Registrada",
+    "Hora Entrada Oficial",
+    "Hora Salida Oficial",
+    "Estado",
+    "Minutos Tardanza",
+    "Horas Extra (min)",
+    "Sede Detectada",
+    "Distancia (m)",
+    "En Rango",
+    "Foto",
+]
+
+
+def sincronizar_marcaciones_nube(supabase, empresa_id):
+    """Trae desde Supabase las marcaciones de esta empresa de los últimos
+    días que aún no estén en el CSV local, y las agrega. Se llama cada vez
+    que se carga el panel; combinado con el auto-refresh del panel admin,
+    funciona como una sincronización 'casi en tiempo real' entre
+    dispositivos (celulares que marcan y laptops que monitorean)."""
+    if not supabase:
+        return
+    try:
+        if os.path.exists(CSV_ASISTENCIA):
+            df_local = pd.read_csv(CSV_ASISTENCIA)
+        else:
+            df_local = pd.DataFrame(columns=COLUMNAS_ASISTENCIA)
+
+        desde = (date.today() - timedelta(days=3)).strftime("%Y-%m-%d")
+        res = (
+            supabase.table("marcaciones_efimeras")
+            .select("*")
+            .eq("empresa_id", str(empresa_id))
+            .gte("fecha", desde)
+            .execute()
+        )
+        registros_nube = res.data or []
+        if not registros_nube:
+            return
+
+        existentes = set()
+        if not df_local.empty:
+            for _, r in df_local.iterrows():
+                existentes.add((
+                    str(r.get("Empleado", "")),
+                    str(r.get("Fecha", "")),
+                    str(r.get("Tipo Marcación", "")),
+                    str(r.get("Hora Registrada", "")),
+                ))
+
+        filas_nuevas = []
+        for reg in registros_nube:
+            clave = (
+                str(reg.get("nombre", "")),
+                str(reg.get("fecha", "")),
+                str(reg.get("tipo", "")),
+                str(reg.get("hora_registrada", "")),
+            )
+            if clave in existentes:
+                continue
+            filas_nuevas.append({
+                "empresa_id": reg.get("empresa_id", empresa_id),
+                "Fecha": reg.get("fecha", ""),
+                "Empleado": reg.get("nombre", ""),
+                "Tipo Marcación": reg.get("tipo", ""),
+                "Hora Registrada": reg.get("hora_registrada", ""),
+                "Hora Entrada Oficial": reg.get("hora_entrada_oficial", ""),
+                "Hora Salida Oficial": reg.get("hora_salida_oficial", ""),
+                "Estado": reg.get("estado", ""),
+                "Minutos Tardanza": reg.get("minutos_tardanza", 0),
+                "Horas Extra (min)": reg.get("horas_extra_min", 0),
+                "Sede Detectada": reg.get("sede_detectada", ""),
+                "Distancia (m)": reg.get("distancia_m", 0.0),
+                "En Rango": reg.get("en_rango", ""),
+                "Foto": reg.get("foto_url", ""),
+            })
+
+        if filas_nuevas:
+            df_local = pd.concat(
+                [df_local, pd.DataFrame(filas_nuevas)], ignore_index=True
+            )
+            df_local.to_csv(CSV_ASISTENCIA, index=False)
+    except Exception:
+        pass  # si falla la sincronización, se sigue mostrando lo que ya había local
+
+
 def cargar_datos(empresa_id):
     cargar_empresas()
 
@@ -515,6 +605,8 @@ def cargar_datos(empresa_id):
             "fecha_ingreso": ["2026-01-01", "2026-01-01"],
         })
         df_empleados.to_csv(CSV_EMPLEADOS, index=False)
+
+    sincronizar_marcaciones_nube(supabase, empresa_id)
 
     if os.path.exists(CSV_ASISTENCIA):
         df_asistencia = pd.read_csv(CSV_ASISTENCIA)
@@ -1626,6 +1718,10 @@ elif opcion == "🔐 Panel de Gestión / Admin":
             else:
                 st.error("No hay empresas disponibles en este entorno.")
     else:
+        from streamlit_autorefresh import st_autorefresh
+
+        st_autorefresh(interval=10_000, key="admin_autorefresh")
+
         st.title(
             f"⚙️ Control Administrativo - [{st.session_state.empresa_id}]"
             f" ({st.session_state.entorno})"
