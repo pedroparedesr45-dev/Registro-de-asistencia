@@ -1555,7 +1555,7 @@ if opcion == "⏰ Marcar Asistencia":
                 )
 
             if st.button("Confirmar Marcación", disabled=btn_disabled):
-                now = ahora_peru()
+                now = ahora_peru().replace(tzinfo=None)
                 fecha_str = now.strftime("%Y-%m-%d")
                 hora_str = now.strftime("%H:%M:%S")
 
