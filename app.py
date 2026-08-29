@@ -6,6 +6,7 @@ import io
 import json
 import os
 from datetime import date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import openpyxl
@@ -16,6 +17,20 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from PIL import Image
 from streamlit_js_eval import get_geolocation
+
+# --- ZONA HORARIA (evita el desfase de horas del servidor, que corre en UTC) ---
+ZONA_HORARIA_APP = ZoneInfo("America/Lima")
+
+
+def ahora_peru() -> datetime:
+    """Hora actual en la zona horaria de Perú (UTC-5), sin importar en qué
+    huso horario esté el servidor donde corre la app."""
+    return datetime.now(ZONA_HORARIA_APP)
+
+
+def hoy_peru() -> date:
+    """Fecha actual en la zona horaria de Perú."""
+    return ahora_peru().date()
 
 # --- CONEXIÓN SEGURA A SUPABASE (NUBE EFÍMERA) ---
 @st.cache_resource
@@ -474,7 +489,7 @@ def sincronizar_marcaciones_nube(supabase, empresa_id):
         else:
             df_local = pd.DataFrame(columns=COLUMNAS_ASISTENCIA)
 
-        desde = (date.today() - timedelta(days=3)).strftime("%Y-%m-%d")
+        desde = (hoy_peru() - timedelta(days=3)).strftime("%Y-%m-%d")
         res = (
             supabase.table("marcaciones_efimeras")
             .select("*")
@@ -1375,8 +1390,8 @@ else:
 
 if opcion == "⏰ Marcar Asistencia":
     st.title("⏰ Registro de Asistencia por GPS")
-    hoy = date.today()
-    st.write(f"**Fecha actual:** {datetime.now().strftime('%d/%m/%Y')}")
+    hoy = hoy_peru()
+    st.write(f"**Fecha actual:** {ahora_peru().strftime('%d/%m/%Y')}")
 
     if not st.session_state.emp_login_ok:
         st.markdown("### 🔑 Iniciar Sesión de Empleado")
@@ -1540,7 +1555,7 @@ if opcion == "⏰ Marcar Asistencia":
                 )
 
             if st.button("Confirmar Marcación", disabled=btn_disabled):
-                now = datetime.now()
+                now = ahora_peru()
                 fecha_str = now.strftime("%Y-%m-%d")
                 hora_str = now.strftime("%H:%M:%S")
 
@@ -1759,7 +1774,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                 mes_nombre_sel = st.selectbox(
                     "Mes Evaluado:",
                     list(MESES_NOMBRES.values()),
-                    index=datetime.now().month - 1,
+                    index=ahora_peru().month - 1,
                 )
                 mes_sel = MESES_INVERSO[mes_nombre_sel]
             with c_f2:
@@ -1767,7 +1782,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                     "Año Evaluado:",
                     min_value=2024,
                     max_value=2030,
-                    value=datetime.now().year,
+                    value=ahora_peru().year,
                 )
             with c_f3:
                 st.write("")
@@ -1931,7 +1946,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                 mes_ind_sel = st.selectbox(
                     "Mes:",
                     list(MESES_NOMBRES.values()),
-                    index=datetime.now().month - 1,
+                    index=ahora_peru().month - 1,
                     key="m_ind_clean",
                 )
             with c_e3:
@@ -1939,7 +1954,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                     "Año:",
                     min_value=2024,
                     max_value=2030,
-                    value=datetime.now().year,
+                    value=ahora_peru().year,
                     key="a_ind_clean",
                 )
 
@@ -2005,7 +2020,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     if os.path.exists(CSV_ASISTENCIA)
                                     else pd.DataFrame()
                                 )
-                                hoy_actual = date.today()
+                                hoy_actual = hoy_peru()
                                 h_ent_ofic, h_sal_ofic = (
                                     obtener_horario_oficial(
                                         emp_info, df_sedes, hoy_actual
@@ -2353,7 +2368,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                 )
 
                 lista_registros_completos = []
-                hoy_eval = date.today()
+                hoy_eval = hoy_peru()
 
                 for d in range(1, num_dias_m + 1):
                     f_curr = date(anio_ind_sel, m_num, d)
@@ -2670,7 +2685,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                             "password": e_pass,
                                             "horario_personalizado": "{}",
                                             "fecha_ingreso": (
-                                                date.today().strftime(
+                                                hoy_peru().strftime(
                                                     "%Y-%m-%d"
                                                 )
                                             ),
