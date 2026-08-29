@@ -19,7 +19,7 @@ from openpyxl.drawing.image import Image as OpenPyxlImage
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from PIL import Image
-from streamlit_js_eval import get_geolocation
+from streamlit_js_eval import get_geolocation, streamlit_js_eval
 
 # --- ZONA HORARIA (evita el desfase de horas del servidor, que corre en UTC) ---
 ZONA_HORARIA_APP = ZoneInfo("America/Lima")
@@ -34,6 +34,12 @@ def ahora_peru() -> datetime:
 def hoy_peru() -> date:
     """Fecha actual en la zona horaria de Perú."""
     return ahora_peru().date()
+
+
+# Contraseña por defecto para empleados nuevos/de ejemplo. Configurable por
+# despliegue vía el secret PASSWORD_EMPLEADO_DEFAULT; si no se configura,
+# usa "123456" como respaldo.
+PASSWORD_EMPLEADO_DEFAULT = st.secrets.get("PASSWORD_EMPLEADO_DEFAULT", "123456")
 
 # --- CONEXIÓN SEGURA A SUPABASE (NUBE EFÍMERA) ---
 @st.cache_resource
@@ -124,12 +130,35 @@ st.markdown(
 
 # --- MODO MÓVIL / TRABAJADOR (vista simplificada, solo marcación) ---
 # Se activa agregando ?modo=movil a la URL (opcionalmente también
-# ?empresa=CODIGO para pre-cargar la empresa). Pensado para instalarse
-# como PWA en el celular del trabajador.
+# ?empresa=CODIGO para pre-cargar la empresa) — usado por la PWA instalada
+# — O AUTOMÁTICAMENTE si se detecta que la pantalla es de tamaño celular.
 MODO_MOVIL = st.query_params.get("modo") == "movil"
 EMPRESA_URL = st.query_params.get("empresa")
 
-if MODO_MOVIL:
+if "ancho_pantalla_px" not in st.session_state:
+    st.session_state.ancho_pantalla_px = None
+
+_ancho_detectado = streamlit_js_eval(
+    js_expressions="window.innerWidth", key="ANCHO_PANTALLA_PX"
+)
+if _ancho_detectado is not None:
+    st.session_state.ancho_pantalla_px = _ancho_detectado
+
+# ES_CELULAR: el dispositivo físico es un celular (por ancho de pantalla o
+# por venir de la PWA), sin importar el rol de quien lo usa.
+ES_CELULAR = MODO_MOVIL or (
+    st.session_state.ancho_pantalla_px is not None
+    and st.session_state.ancho_pantalla_px < 768
+)
+
+# VISTA_TRABAJADOR_MOVIL: además de ser celular, la persona todavía no
+# inició sesión como Admin/SuperAdmin/Developer con PIN. Es la vista
+# simplificada de solo marcación (sin menú lateral ni panel admin).
+VISTA_TRABAJADOR_MOVIL = ES_CELULAR and not st.session_state.get(
+    "autenticado", False
+)
+
+if VISTA_TRABAJADOR_MOVIL:
     st.markdown(
         """
         <link rel="manifest" href="/app/static/manifest.json">
@@ -151,6 +180,7 @@ if MODO_MOVIL:
         """,
         unsafe_allow_html=True,
     )
+
 
 st.markdown(
     """
@@ -299,13 +329,13 @@ if "autenticado" not in st.session_state:
 if "rol" not in st.session_state:
     st.session_state.rol = None
 if "pin_admin" not in st.session_state:
-    st.session_state.pin_admin = "1234"
+    st.session_state.pin_admin = st.secrets.get("PIN_ADMIN", "1234")
 if "pin_visor" not in st.session_state:
-    st.session_state.pin_visor = "5678"
+    st.session_state.pin_visor = st.secrets.get("PIN_VISOR", "5678")
 if "pin_master" not in st.session_state:
-    st.session_state.pin_master = "9999"
+    st.session_state.pin_master = st.secrets.get("PIN_MASTER", "9999")
 if "clave_excel" not in st.session_state:
-    st.session_state.clave_excel = "admin123"
+    st.session_state.clave_excel = st.secrets.get("CLAVE_EXCEL", "admin123")
 if "fecha_inicio_sistema" not in st.session_state:
     st.session_state.fecha_inicio_sistema = date(2026, 1, 1)
 
@@ -630,7 +660,7 @@ def cargar_datos(empresa_id):
             ].apply(lambda x: json.dumps([x]) if pd.notna(x) else "[]")
 
         if "password" not in df_empleados.columns:
-            df_empleados["password"] = "123456"
+            df_empleados["password"] = PASSWORD_EMPLEADO_DEFAULT
         if "horario_personalizado" not in df_empleados.columns:
             df_empleados["horario_personalizado"] = "{}"
         if "fecha_ingreso" not in df_empleados.columns:
@@ -650,7 +680,7 @@ def cargar_datos(empresa_id):
                 json.dumps(["OFICINA PRINCIPAL"]),
             ],
             "cargo": ["PRACTICANTE CONTABLE", "ASISTENTE DE VENTAS"],
-            "password": ["123456", "123456"],
+            "password": [PASSWORD_EMPLEADO_DEFAULT, PASSWORD_EMPLEADO_DEFAULT],
             "horario_personalizado": ["{}", "{}"],
             "fecha_ingreso": ["2026-01-01", "2026-01-01"],
         })
@@ -695,7 +725,7 @@ def cargar_datos(empresa_id):
 
 
 # BARRA LATERAL: ENTORNO Y CAMBIO RÁPIDO
-if not MODO_MOVIL:
+if not VISTA_TRABAJADOR_MOVIL:
     st.sidebar.title("📌 Menú Principal")
 
     entorno_sel = st.sidebar.radio(
@@ -1404,12 +1434,12 @@ if st.session_state.emp_login_ok and not st.session_state.autenticado:
         unsafe_allow_html=True,
     )
 
-if st.session_state.entorno == "DEV" and not MODO_MOVIL:
+if st.session_state.entorno == "DEV" and not VISTA_TRABAJADOR_MOVIL:
     st.sidebar.warning(
         "⚠️ Entorno de Desarrollo Activo (Solo empresas Sandbox)"
     )
 
-if MODO_MOVIL:
+if VISTA_TRABAJADOR_MOVIL:
     opcion = "⏰ Marcar Asistencia"
 else:
     opcion = st.sidebar.radio(
@@ -1427,6 +1457,42 @@ if opcion == "⏰ Marcar Asistencia":
     st.title("⏰ Registro de Asistencia por GPS")
     hoy = hoy_peru()
     st.write(f"**Fecha actual:** {ahora_peru().strftime('%d/%m/%Y')}")
+
+    if VISTA_TRABAJADOR_MOVIL:
+        with st.expander("🔐 ¿Eres Admin, SuperAdmin o Developer?"):
+            df_e_disponibles_mov = cargar_empresas()
+            df_e_disponibles_mov = df_e_disponibles_mov[
+                df_e_disponibles_mov["entorno"] == st.session_state.entorno
+            ]
+            empresa_admin_mov = st.selectbox(
+                "Empresa:",
+                df_e_disponibles_mov["empresa_id"].unique()
+                if not df_e_disponibles_mov.empty
+                else [],
+                key="empresa_admin_movil",
+            )
+            pin_mov = st.text_input(
+                "PIN de Acceso:", type="password", key="pin_admin_movil"
+            )
+            if st.button("Ingresar al Panel", key="btn_login_admin_movil"):
+                if empresa_admin_mov:
+                    st.session_state.empresa_id = empresa_admin_mov
+                    if pin_mov == st.session_state.pin_admin:
+                        st.session_state.autenticado = True
+                        st.session_state.rol = "admin"
+                        st.rerun()
+                    elif pin_mov == st.session_state.pin_visor:
+                        st.session_state.autenticado = True
+                        st.session_state.rol = "visor"
+                        st.rerun()
+                    elif pin_mov == st.session_state.pin_master:
+                        st.session_state.autenticado = True
+                        st.session_state.rol = "master"
+                        st.rerun()
+                    else:
+                        st.error("PIN Incorrecto.")
+                else:
+                    st.error("No hay empresas disponibles en este entorno.")
 
     if not st.session_state.emp_login_ok:
         st.markdown("### 🔑 Iniciar Sesión de Empleado")
@@ -1787,7 +1853,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
             or st.session_state.entorno == "DEV"
         )
 
-        if st.session_state.rol in ["admin", "master"]:
+        if st.session_state.rol in ["admin", "master"] and not ES_CELULAR:
             if es_master_o_dev:
                 tab_gestion_nombre = "🏢 Gestión de Empresas y Sedes"
             else:
@@ -1798,6 +1864,12 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                 "👥 Personal",
                 "⚙️ Ajustes",
             ])
+        elif st.session_state.rol in ["admin", "master"] and ES_CELULAR:
+            st.caption(
+                "📱 Estás viendo la versión móvil: solo reportes. Entra "
+                "desde una laptop/PC para gestionar empresas, personal y"
+                " ajustes."
+            )
 
         tab_objs = st.tabs(tabs)
 
@@ -2020,7 +2092,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                 es_autorizado_edicion = (
                     st.session_state.rol in ["admin", "master"]
                     or st.session_state.entorno == "DEV"
-                )
+                ) and not ES_CELULAR
 
                 if es_autorizado_edicion:
                     with st.expander(
@@ -2481,7 +2553,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                         " este mes."
                     )
 
-        if st.session_state.rol in ["admin", "master"]:
+        if st.session_state.rol in ["admin", "master"] and not ES_CELULAR:
             with tab_objs[2]:
                 if es_master_o_dev:
                     st.subheader("🏢 Gestión Integral de Empresas y Sedes SaaS")
@@ -2582,14 +2654,14 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                         except Exception:
                             val_sed_a = [val_sed_p] if val_sed_p else []
 
-                        val_pas = str(datos_e.get("password", "123456"))
+                        val_pas = str(datos_e.get("password", PASSWORD_EMPLEADO_DEFAULT))
                     else:
                         val_dni = ""
                         val_nom = ""
                         val_car = ""
                         val_sed_p = sedes_lista[0] if sedes_lista else ""
                         val_sed_a = sedes_lista.copy()
-                        val_pas = "123456"
+                        val_pas = PASSWORD_EMPLEADO_DEFAULT
 
                     default_sedes_validas = [
                         s for s in val_sed_a if s in sedes_lista
