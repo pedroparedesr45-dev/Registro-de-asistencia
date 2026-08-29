@@ -689,6 +689,54 @@ def guardar_password_empleado(supabase, empresa_id, dni, nueva_password):
     ).execute()
 
 
+# --- MIGRACIÓN: TABLA DE TRABAJADORES EN SUPABASE (antes vivía solo en un
+# CSV local que Streamlit Cloud borra en cada redespliegue) ---
+def cargar_empleados_supabase(supabase, empresa_id):
+    """Trae la lista de trabajadores de esta empresa desde Supabase.
+    Devuelve None si Supabase no está disponible o falla la consulta (así
+    quien llama sabe que debe usar el CSV local como respaldo/modo offline).
+    Devuelve una lista (puede estar vacía, [] ) si la consulta sí funcionó."""
+    if not supabase:
+        return None
+    try:
+        res = (
+            supabase.table("empleados")
+            .select("*")
+            .eq("empresa_id", str(empresa_id))
+            .execute()
+        )
+        return res.data
+    except Exception:
+        return None
+
+
+def guardar_empleado_supabase(supabase, datos_empleado):
+    """Crea o actualiza (upsert) un trabajador en Supabase. 'datos_empleado'
+    debe incluir al menos empresa_id y dni; los demás campos que se pasen
+    se sobrescriben, el resto de columnas de esa fila no se tocan."""
+    if not supabase:
+        raise RuntimeError("El cliente de Supabase no está configurado.")
+    datos = dict(datos_empleado)
+    datos["empresa_id"] = str(datos["empresa_id"])
+    datos["dni"] = str(datos["dni"])
+    supabase.table("empleados").upsert(
+        datos, on_conflict="empresa_id,dni"
+    ).execute()
+
+
+def eliminar_empleado_supabase(supabase, empresa_id, dni):
+    """Borra (DELETE real) un trabajador de Supabase."""
+    if not supabase:
+        raise RuntimeError("El cliente de Supabase no está configurado.")
+    (
+        supabase.table("empleados")
+        .delete()
+        .eq("empresa_id", str(empresa_id))
+        .eq("dni", str(dni))
+        .execute()
+    )
+
+
 def cargar_datos(empresa_id):
     cargar_empresas()
 
@@ -718,7 +766,75 @@ def cargar_datos(empresa_id):
         })
         df_sedes.to_csv(CSV_SEDES, index=False)
 
-    if os.path.exists(CSV_EMPLEADOS):
+    registros_empleados = cargar_empleados_supabase(supabase, empresa_id)
+
+    if registros_empleados is not None:
+        # Supabase respondió: es la fuente de verdad (sobrevive a los
+        # redespliegues). Puede venir vacía si esta empresa todavía no
+        # tiene trabajadores registrados en la nube.
+        columnas_empleados = [
+            "empresa_id",
+            "dni",
+            "nombre",
+            "sede_principal",
+            "sedes_autorizadas",
+            "cargo",
+            "password",
+            "horario_personalizado",
+            "fecha_ingreso",
+        ]
+        if registros_empleados:
+            df_empleados = pd.DataFrame(registros_empleados)
+        else:
+            df_empleados = pd.DataFrame(columns=columnas_empleados)
+
+        df_empleados["dni"] = df_empleados["dni"].astype(str)
+        if "empresa_id" not in df_empleados.columns:
+            df_empleados["empresa_id"] = empresa_id
+        if "sedes_autorizadas" not in df_empleados.columns:
+            df_empleados["sedes_autorizadas"] = "[]"
+        df_empleados["sedes_autorizadas"] = df_empleados[
+            "sedes_autorizadas"
+        ].fillna("[]")
+        if "password" not in df_empleados.columns:
+            df_empleados["password"] = PASSWORD_EMPLEADO_DEFAULT
+        df_empleados["password"] = df_empleados["password"].fillna(
+            PASSWORD_EMPLEADO_DEFAULT
+        )
+        if "horario_personalizado" not in df_empleados.columns:
+            df_empleados["horario_personalizado"] = "{}"
+        df_empleados["horario_personalizado"] = df_empleados[
+            "horario_personalizado"
+        ].fillna("{}")
+        if "fecha_ingreso" not in df_empleados.columns:
+            df_empleados["fecha_ingreso"] = hoy_peru().strftime("%Y-%m-%d")
+        df_empleados["fecha_ingreso"] = df_empleados["fecha_ingreso"].fillna(
+            hoy_peru().strftime("%Y-%m-%d")
+        )
+        # Se guarda también una copia local, solo como caché/respaldo por
+        # si más tarde Supabase no responde (modo offline de emergencia).
+        # Se hace un "merge" con lo que ya había en el CSV para no perder
+        # trabajadores de OTRAS empresas (el panel Developer puede tener
+        # varias empresas cargadas en el mismo CSV al ir cambiando de
+        # entorno/empresa desde la barra lateral).
+        try:
+            if os.path.exists(CSV_EMPLEADOS):
+                df_csv_previo = pd.read_csv(CSV_EMPLEADOS)
+                df_csv_previo = df_csv_previo[
+                    df_csv_previo["empresa_id"].astype(str) != str(empresa_id)
+                ]
+                df_mirror = pd.concat(
+                    [df_csv_previo, df_empleados[columnas_empleados]],
+                    ignore_index=True,
+                )
+            else:
+                df_mirror = df_empleados[columnas_empleados]
+            df_mirror.to_csv(CSV_EMPLEADOS, index=False)
+        except Exception:
+            pass
+    elif os.path.exists(CSV_EMPLEADOS):
+        # Supabase no disponible ahora mismo: se sigue funcionando en modo
+        # 100% local con lo último que se guardó en el CSV.
         df_empleados = pd.read_csv(CSV_EMPLEADOS)
         df_empleados["dni"] = df_empleados["dni"].astype(str)
 
@@ -744,6 +860,8 @@ def cargar_datos(empresa_id):
             df_empleados["fecha_ingreso"] = "2026-01-01"
         df_empleados.to_csv(CSV_EMPLEADOS, index=False)
     else:
+        # Ni Supabase ni CSV: primer arranque totalmente local, con 2
+        # trabajadores de ejemplo para que la app no se caiga.
         df_empleados = pd.DataFrame({
             "empresa_id": [empresa_id, empresa_id],
             "dni": ["75227702", "75227703"],
@@ -2841,27 +2959,6 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 "💾 Actualizar Datos",
                                 use_container_width=True,
                             ):
-                                df_emp_full = pd.read_csv(CSV_EMPLEADOS)
-                                idx_e = df_emp_full[
-                                    (
-                                        df_emp_full["empresa_id"].astype(str)
-                                        == str(st.session_state.empresa_id)
-                                    )
-                                    & (
-                                        df_emp_full["dni"].astype(str)
-                                        == val_dni
-                                    )
-                                ].index[0]
-                                df_emp_full.at[idx_e, "nombre"] = (
-                                    e_nombre.strip().upper()
-                                )
-                                df_emp_full.at[idx_e, "cargo"] = (
-                                    e_cargo.strip().upper()
-                                )
-                                df_emp_full.at[idx_e, "sede_principal"] = (
-                                    e_sede_principal
-                                )
-
                                 sedes_finales = (
                                     e_sedes_autorizadas
                                     if e_sedes_autorizadas
@@ -2870,12 +2967,63 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 if e_sede_principal not in sedes_finales:
                                     sedes_finales.append(e_sede_principal)
 
-                                df_emp_full.at[
-                                    idx_e, "sedes_autorizadas"
-                                ] = json.dumps(sedes_finales)
-                                df_emp_full.at[idx_e, "password"] = e_pass
+                                datos_actualizados = {
+                                    "empresa_id": st.session_state.empresa_id,
+                                    "dni": val_dni,
+                                    "nombre": e_nombre.strip().upper(),
+                                    "cargo": e_cargo.strip().upper(),
+                                    "sede_principal": e_sede_principal,
+                                    "sedes_autorizadas": json.dumps(
+                                        sedes_finales
+                                    ),
+                                    "password": e_pass,
+                                }
 
-                                df_emp_full.to_csv(CSV_EMPLEADOS, index=False)
+                                if supabase:
+                                    try:
+                                        guardar_empleado_supabase(
+                                            supabase, datos_actualizados
+                                        )
+                                    except Exception as e:
+                                        st.warning(
+                                            "No se pudo guardar en la nube"
+                                            f" ({e}). Se guardó solo local;"
+                                            " se perderá en el próximo"
+                                            " redespliegue."
+                                        )
+
+                                # Se actualiza también el CSV local (caché
+                                # inmediata / respaldo offline).
+                                if os.path.exists(CSV_EMPLEADOS):
+                                    df_emp_full = pd.read_csv(CSV_EMPLEADOS)
+                                    df_emp_full["dni"] = df_emp_full[
+                                        "dni"
+                                    ].astype(str)
+                                    idx_e = df_emp_full[
+                                        (
+                                            df_emp_full[
+                                                "empresa_id"
+                                            ].astype(str)
+                                            == str(
+                                                st.session_state.empresa_id
+                                            )
+                                        )
+                                        & (
+                                            df_emp_full["dni"].astype(str)
+                                            == val_dni
+                                        )
+                                    ].index
+                                    if len(idx_e) > 0:
+                                        for campo, valor in (
+                                            datos_actualizados.items()
+                                        ):
+                                            df_emp_full.at[
+                                                idx_e[0], campo
+                                            ] = valor
+                                        df_emp_full.to_csv(
+                                            CSV_EMPLEADOS, index=False
+                                        )
+
                                 st.success(
                                     "Datos del trabajador actualizados."
                                 )
@@ -2886,17 +3034,20 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 use_container_width=True,
                             ):
                                 if e_dni and e_nombre:
-                                    df_emp_full = pd.read_csv(CSV_EMPLEADOS)
-                                    if not df_emp_full[
+                                    if (
                                         (
-                                            df_emp_full["empresa_id"].astype(str)
-                                            == str(st.session_state.empresa_id)
+                                            df_empleados["empresa_id"].astype(
+                                                str
+                                            )
+                                            == str(
+                                                st.session_state.empresa_id
+                                            )
                                         )
                                         & (
-                                            df_emp_full["dni"].astype(str)
+                                            df_empleados["dni"].astype(str)
                                             == e_dni.strip()
                                         )
-                                    ].empty:
+                                    ).any():
                                         st.error(
                                             "El DNI ingresado ya existe en esta"
                                             " empresa."
@@ -2934,6 +3085,29 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                                 )
                                             ),
                                         }
+
+                                        if supabase:
+                                            try:
+                                                guardar_empleado_supabase(
+                                                    supabase, nuevo_emp
+                                                )
+                                            except Exception as e:
+                                                st.warning(
+                                                    "No se pudo guardar en"
+                                                    f" la nube ({e}). Se"
+                                                    " guardó solo local; se"
+                                                    " perderá en el próximo"
+                                                    " redespliegue."
+                                                )
+
+                                        # Copia local (caché / respaldo
+                                        # offline).
+                                        if os.path.exists(CSV_EMPLEADOS):
+                                            df_emp_full = pd.read_csv(
+                                                CSV_EMPLEADOS
+                                            )
+                                        else:
+                                            df_emp_full = pd.DataFrame()
                                         df_emp_full = pd.concat(
                                             [
                                                 df_emp_full,
@@ -2956,20 +3130,40 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 "🗑️ Eliminar Trabajador",
                                 use_container_width=True,
                             ):
-                                df_emp_full = pd.read_csv(CSV_EMPLEADOS)
-                                df_emp_full = df_emp_full[
-                                    ~(
-                                        (
-                                            df_emp_full["empresa_id"].astype(str)
-                                            == str(st.session_state.empresa_id)
+                                if supabase:
+                                    try:
+                                        eliminar_empleado_supabase(
+                                            supabase,
+                                            st.session_state.empresa_id,
+                                            val_dni,
                                         )
-                                        & (
-                                            df_emp_full["dni"].astype(str)
-                                            == val_dni
+                                    except Exception as e:
+                                        st.warning(
+                                            "No se pudo eliminar en la nube"
+                                            f" ({e}). Se eliminó solo local."
                                         )
+
+                                if os.path.exists(CSV_EMPLEADOS):
+                                    df_emp_full = pd.read_csv(CSV_EMPLEADOS)
+                                    df_emp_full = df_emp_full[
+                                        ~(
+                                            (
+                                                df_emp_full[
+                                                    "empresa_id"
+                                                ].astype(str)
+                                                == str(
+                                                    st.session_state.empresa_id
+                                                )
+                                            )
+                                            & (
+                                                df_emp_full["dni"].astype(str)
+                                                == val_dni
+                                            )
+                                        )
+                                    ]
+                                    df_emp_full.to_csv(
+                                        CSV_EMPLEADOS, index=False
                                     )
-                                ]
-                                df_emp_full.to_csv(CSV_EMPLEADOS, index=False)
                                 st.warning("Trabajador eliminado.")
                                 st.rerun()
 
@@ -3047,18 +3241,49 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                             }
 
                     if st.button("💾 Guardar Horario Personalizado"):
-                        df_emp_full = pd.read_csv(CSV_EMPLEADOS)
-                        idx_h = df_emp_full[
-                            (
-                                df_emp_full["empresa_id"].astype(str)
-                                == str(st.session_state.empresa_id)
+                        dni_h = str(emp_h_row["dni"])
+                        horario_json = json.dumps(nuevo_h_dict)
+
+                        if supabase:
+                            try:
+                                guardar_empleado_supabase(
+                                    supabase,
+                                    {
+                                        "empresa_id": (
+                                            st.session_state.empresa_id
+                                        ),
+                                        "dni": dni_h,
+                                        "horario_personalizado": (
+                                            horario_json
+                                        ),
+                                    },
+                                )
+                            except Exception as e:
+                                st.warning(
+                                    "No se pudo guardar en la nube"
+                                    f" ({e}). Se guardó solo local; se"
+                                    " perderá en el próximo redespliegue."
+                                )
+
+                        if os.path.exists(CSV_EMPLEADOS):
+                            df_emp_full = pd.read_csv(CSV_EMPLEADOS)
+                            df_emp_full["dni"] = df_emp_full["dni"].astype(
+                                str
                             )
-                            & (df_emp_full["nombre"] == emp_h_sel)
-                        ].index[0]
-                        df_emp_full.at[idx_h, "horario_personalizado"] = (
-                            json.dumps(nuevo_h_dict)
-                        )
-                        df_emp_full.to_csv(CSV_EMPLEADOS, index=False)
+                            idx_h = df_emp_full[
+                                (
+                                    df_emp_full["empresa_id"].astype(str)
+                                    == str(st.session_state.empresa_id)
+                                )
+                                & (df_emp_full["dni"] == dni_h)
+                            ].index
+                            if len(idx_h) > 0:
+                                df_emp_full.at[
+                                    idx_h[0], "horario_personalizado"
+                                ] = horario_json
+                                df_emp_full.to_csv(
+                                    CSV_EMPLEADOS, index=False
+                                )
                         st.success(
                             "Horario individual guardado correctamente."
                         )
