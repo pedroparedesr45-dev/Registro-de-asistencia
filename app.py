@@ -584,6 +584,30 @@ def cargar_empresas():
                 df[columna] = valor_default
             df[columna] = df[columna].fillna(valor_default)
 
+        # GARANTÍA: siempre debe existir al menos una empresa en entorno
+        # DEV. Si no hubiera ninguna (tabla recién creada en Supabase, o
+        # si se borraron todas por error), no habría forma de entrar al
+        # panel Developer para dar de alta las demás empresas. Se crea
+        # automáticamente y se guarda en Supabase para que quede fija.
+        if df.empty or not (df["entorno"] == "DEV").any():
+            empresa_dev_default = {
+                "empresa_id": "DEV_TEST",
+                "razon_social": "ENTORNO PRUEBAS DEV",
+                "ruc": "20000000001",
+                "plan": "DEVELOPER",
+                "estado": "ACTIVO",
+                "entorno": "DEV",
+            }
+            if supabase:
+                try:
+                    guardar_empresa_supabase(supabase, empresa_dev_default)
+                except Exception:
+                    pass
+            df = pd.concat(
+                [df, pd.DataFrame([empresa_dev_default])],
+                ignore_index=True,
+            )
+
         # Copia local como caché/respaldo por si Supabase falla más tarde.
         try:
             df[columnas_empresas].to_csv(CSV_EMPRESAS, index=False)
@@ -596,7 +620,22 @@ def cargar_empresas():
         if "entorno" not in df.columns:
             df["entorno"] = "PROD"
             df.loc[df["empresa_id"] == "DEV_TEST", "entorno"] = "DEV"
-            df.to_csv(CSV_EMPRESAS, index=False)
+        if df.empty or not (df["entorno"] == "DEV").any():
+            df = pd.concat(
+                [
+                    df,
+                    pd.DataFrame([{
+                        "empresa_id": "DEV_TEST",
+                        "razon_social": "ENTORNO PRUEBAS DEV",
+                        "ruc": "20000000001",
+                        "plan": "DEVELOPER",
+                        "estado": "ACTIVO",
+                        "entorno": "DEV",
+                    }]),
+                ],
+                ignore_index=True,
+            )
+        df.to_csv(CSV_EMPRESAS, index=False)
         return df
     else:
         df_init = pd.DataFrame({
