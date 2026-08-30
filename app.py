@@ -2,13 +2,16 @@ import streamlit as st
 from supabase import create_client, Client
 import base64
 import calendar
+import fcntl
 import io
 import json
 import os
 import smtplib
 import zipfile
+from contextlib import contextmanager
 from email.message import EmailMessage
 from datetime import date, datetime, time, timedelta
+from time import monotonic as _tiempo_monotonico, sleep as _dormir
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -393,6 +396,44 @@ DIR_FOTOS = "fotos_asistencia"
 if not os.path.exists(DIR_FOTOS):
     os.makedirs(DIR_FOTOS)
 
+
+@contextmanager
+def bloqueo_csv(ruta_csv, timeout=15):
+    """Bloqueo exclusivo de archivo (a nivel de sistema operativo, vía
+    fcntl) para evitar que dos operaciones simultáneas sobre el mismo CSV
+    se pisen entre sí — por ejemplo, dos trabajadores marcando asistencia
+    al mismo tiempo, o un admin editando mientras se sincroniza desde la
+    nube.
+
+    IMPORTANTE para quien edite este código: hay que usarlo envolviendo
+    TODO el bloque que lee, modifica y vuelve a escribir el archivo — no
+    solo la línea de escritura final. Si el bloqueo solo cubriera el
+    to_csv(), dos hilos podrían leer el mismo estado viejo antes de que el
+    otro termine de escribir, y el que escriba último borraría el cambio
+    del primero (esto se llama "lost update" / carrera de datos).
+    """
+    ruta_lock = f"{ruta_csv}.lock"
+    inicio = _tiempo_monotonico()
+    f_lock = open(ruta_lock, "w")
+    try:
+        while True:
+            try:
+                fcntl.flock(f_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if _tiempo_monotonico() - inicio > timeout:
+                    raise TimeoutError(
+                        f"No se pudo obtener el bloqueo de {ruta_csv} a"
+                        " tiempo (otra operación lo está usando)."
+                    )
+                _dormir(0.1)
+        try:
+            yield
+        finally:
+            fcntl.flock(f_lock, fcntl.LOCK_UN)
+    finally:
+        f_lock.close()
+
 MESES_NOMBRES = {
     1: "Enero",
     2: "Febrero",
@@ -610,32 +651,34 @@ def cargar_empresas():
 
         # Copia local como caché/respaldo por si Supabase falla más tarde.
         try:
-            df[columnas_empresas].to_csv(CSV_EMPRESAS, index=False)
+            with bloqueo_csv(CSV_EMPRESAS):
+                df[columnas_empresas].to_csv(CSV_EMPRESAS, index=False)
         except Exception:
             pass
         return df
 
     if os.path.exists(CSV_EMPRESAS):
-        df = pd.read_csv(CSV_EMPRESAS)
-        if "entorno" not in df.columns:
-            df["entorno"] = "PROD"
-            df.loc[df["empresa_id"] == "DEV_TEST", "entorno"] = "DEV"
-        if df.empty or not (df["entorno"] == "DEV").any():
-            df = pd.concat(
-                [
-                    df,
-                    pd.DataFrame([{
-                        "empresa_id": "DEV_TEST",
-                        "razon_social": "ENTORNO PRUEBAS DEV",
-                        "ruc": "20000000001",
-                        "plan": "DEVELOPER",
-                        "estado": "ACTIVO",
-                        "entorno": "DEV",
-                    }]),
-                ],
-                ignore_index=True,
-            )
-        df.to_csv(CSV_EMPRESAS, index=False)
+        with bloqueo_csv(CSV_EMPRESAS):
+            df = pd.read_csv(CSV_EMPRESAS)
+            if "entorno" not in df.columns:
+                df["entorno"] = "PROD"
+                df.loc[df["empresa_id"] == "DEV_TEST", "entorno"] = "DEV"
+            if df.empty or not (df["entorno"] == "DEV").any():
+                df = pd.concat(
+                    [
+                        df,
+                        pd.DataFrame([{
+                            "empresa_id": "DEV_TEST",
+                            "razon_social": "ENTORNO PRUEBAS DEV",
+                            "ruc": "20000000001",
+                            "plan": "DEVELOPER",
+                            "estado": "ACTIVO",
+                            "entorno": "DEV",
+                        }]),
+                    ],
+                    ignore_index=True,
+                )
+            df.to_csv(CSV_EMPRESAS, index=False)
         return df
     else:
         df_init = pd.DataFrame({
@@ -646,7 +689,8 @@ def cargar_empresas():
             "estado": ["ACTIVO", "ACTIVO"],
             "entorno": ["PROD", "DEV"],
         })
-        df_init.to_csv(CSV_EMPRESAS, index=False)
+        with bloqueo_csv(CSV_EMPRESAS):
+            df_init.to_csv(CSV_EMPRESAS, index=False)
         return df_init
 
 
@@ -677,65 +721,71 @@ def sincronizar_marcaciones_nube(supabase, empresa_id):
     if not supabase:
         return
     try:
-        if os.path.exists(CSV_ASISTENCIA):
-            df_local = pd.read_csv(CSV_ASISTENCIA)
-        else:
-            df_local = pd.DataFrame(columns=COLUMNAS_ASISTENCIA)
+        with bloqueo_csv(CSV_ASISTENCIA):
+            if os.path.exists(CSV_ASISTENCIA):
+                df_local = pd.read_csv(CSV_ASISTENCIA)
+            else:
+                df_local = pd.DataFrame(columns=COLUMNAS_ASISTENCIA)
 
-        desde = (hoy_peru() - timedelta(days=3)).strftime("%Y-%m-%d")
-        res = (
-            supabase.table("marcaciones_efimeras")
-            .select("*")
-            .eq("empresa_id", str(empresa_id))
-            .gte("fecha", desde)
-            .execute()
-        )
-        registros_nube = res.data or []
-        if not registros_nube:
-            return
-
-        existentes = set()
-        if not df_local.empty:
-            for _, r in df_local.iterrows():
-                existentes.add((
-                    str(r.get("Empleado", "")),
-                    str(r.get("Fecha", "")),
-                    str(r.get("Tipo Marcación", "")),
-                    str(r.get("Hora Registrada", "")),
-                ))
-
-        filas_nuevas = []
-        for reg in registros_nube:
-            clave = (
-                str(reg.get("nombre", "")),
-                str(reg.get("fecha", "")),
-                str(reg.get("tipo", "")),
-                str(reg.get("hora_registrada", "")),
+            desde = (hoy_peru() - timedelta(days=3)).strftime("%Y-%m-%d")
+            res = (
+                supabase.table("marcaciones_efimeras")
+                .select("*")
+                .eq("empresa_id", str(empresa_id))
+                .gte("fecha", desde)
+                .execute()
             )
-            if clave in existentes:
-                continue
-            filas_nuevas.append({
-                "empresa_id": reg.get("empresa_id", empresa_id),
-                "Fecha": reg.get("fecha", ""),
-                "Empleado": reg.get("nombre", ""),
-                "Tipo Marcación": reg.get("tipo", ""),
-                "Hora Registrada": reg.get("hora_registrada", ""),
-                "Hora Entrada Oficial": reg.get("hora_entrada_oficial", ""),
-                "Hora Salida Oficial": reg.get("hora_salida_oficial", ""),
-                "Estado": reg.get("estado", ""),
-                "Minutos Tardanza": reg.get("minutos_tardanza", 0),
-                "Horas Extra (min)": reg.get("horas_extra_min", 0),
-                "Sede Detectada": reg.get("sede_detectada", ""),
-                "Distancia (m)": reg.get("distancia_m", 0.0),
-                "En Rango": reg.get("en_rango", ""),
-                "Foto": reg.get("foto_url", ""),
-            })
+            registros_nube = res.data or []
+            if not registros_nube:
+                return
 
-        if filas_nuevas:
-            df_local = pd.concat(
-                [df_local, pd.DataFrame(filas_nuevas)], ignore_index=True
-            )
-            df_local.to_csv(CSV_ASISTENCIA, index=False)
+            existentes = set()
+            if not df_local.empty:
+                for _, r in df_local.iterrows():
+                    existentes.add((
+                        str(r.get("Empleado", "")),
+                        str(r.get("Fecha", "")),
+                        str(r.get("Tipo Marcación", "")),
+                        str(r.get("Hora Registrada", "")),
+                    ))
+
+            filas_nuevas = []
+            for reg in registros_nube:
+                clave = (
+                    str(reg.get("nombre", "")),
+                    str(reg.get("fecha", "")),
+                    str(reg.get("tipo", "")),
+                    str(reg.get("hora_registrada", "")),
+                )
+                if clave in existentes:
+                    continue
+                filas_nuevas.append({
+                    "empresa_id": reg.get("empresa_id", empresa_id),
+                    "Fecha": reg.get("fecha", ""),
+                    "Empleado": reg.get("nombre", ""),
+                    "Tipo Marcación": reg.get("tipo", ""),
+                    "Hora Registrada": reg.get("hora_registrada", ""),
+                    "Hora Entrada Oficial": reg.get(
+                        "hora_entrada_oficial", ""
+                    ),
+                    "Hora Salida Oficial": reg.get(
+                        "hora_salida_oficial", ""
+                    ),
+                    "Estado": reg.get("estado", ""),
+                    "Minutos Tardanza": reg.get("minutos_tardanza", 0),
+                    "Horas Extra (min)": reg.get("horas_extra_min", 0),
+                    "Sede Detectada": reg.get("sede_detectada", ""),
+                    "Distancia (m)": reg.get("distancia_m", 0.0),
+                    "En Rango": reg.get("en_rango", ""),
+                    "Foto": reg.get("foto_url", ""),
+                })
+
+            if filas_nuevas:
+                df_local = pd.concat(
+                    [df_local, pd.DataFrame(filas_nuevas)],
+                    ignore_index=True,
+                )
+                df_local.to_csv(CSV_ASISTENCIA, index=False)
     except Exception:
         pass  # si falla la sincronización, se sigue mostrando lo que ya había local
 
@@ -983,31 +1033,34 @@ def cargar_datos(empresa_id):
         # empresas que ya estuvieran en el CSV (panel Developer puede tener
         # varias empresas cargadas al ir cambiando de entorno).
         try:
-            if os.path.exists(CSV_SEDES):
-                df_csv_previo = pd.read_csv(CSV_SEDES)
-                df_csv_previo = df_csv_previo[
-                    df_csv_previo["empresa_id"].astype(str) != str(empresa_id)
-                ]
-                df_mirror = pd.concat(
-                    [df_csv_previo, df_sedes[columnas_sedes]],
-                    ignore_index=True,
-                )
-            else:
-                df_mirror = df_sedes[columnas_sedes]
-            df_mirror.to_csv(CSV_SEDES, index=False)
+            with bloqueo_csv(CSV_SEDES):
+                if os.path.exists(CSV_SEDES):
+                    df_csv_previo = pd.read_csv(CSV_SEDES)
+                    df_csv_previo = df_csv_previo[
+                        df_csv_previo["empresa_id"].astype(str)
+                        != str(empresa_id)
+                    ]
+                    df_mirror = pd.concat(
+                        [df_csv_previo, df_sedes[columnas_sedes]],
+                        ignore_index=True,
+                    )
+                else:
+                    df_mirror = df_sedes[columnas_sedes]
+                df_mirror.to_csv(CSV_SEDES, index=False)
         except Exception:
             pass
     elif os.path.exists(CSV_SEDES):
         # Supabase no disponible ahora mismo: modo 100% local con lo
         # último que se guardó en el CSV.
-        df_sedes = pd.read_csv(CSV_SEDES)
-        if "empresa_id" not in df_sedes.columns:
-            df_sedes["empresa_id"] = empresa_id
-        if "rango_metros" not in df_sedes.columns:
-            df_sedes["rango_metros"] = 100.0
-        if "hora_salida" not in df_sedes.columns:
-            df_sedes["hora_salida"] = "17:00:00"
-        df_sedes.to_csv(CSV_SEDES, index=False)
+        with bloqueo_csv(CSV_SEDES):
+            df_sedes = pd.read_csv(CSV_SEDES)
+            if "empresa_id" not in df_sedes.columns:
+                df_sedes["empresa_id"] = empresa_id
+            if "rango_metros" not in df_sedes.columns:
+                df_sedes["rango_metros"] = 100.0
+            if "hora_salida" not in df_sedes.columns:
+                df_sedes["hora_salida"] = "17:00:00"
+            df_sedes.to_csv(CSV_SEDES, index=False)
     else:
         # Ni Supabase ni CSV: primer arranque totalmente local, con sedes
         # de ejemplo para que la app no se caiga.
@@ -1025,7 +1078,8 @@ def cargar_datos(empresa_id):
             "hora_salida": ["17:00:00", "17:00:00", "16:30:00", "16:30:00"],
             "rango_metros": [100.0, 100.0, 100.0, 100.0],
         })
-        df_sedes.to_csv(CSV_SEDES, index=False)
+        with bloqueo_csv(CSV_SEDES):
+            df_sedes.to_csv(CSV_SEDES, index=False)
 
     registros_empleados = cargar_empleados_supabase(supabase, empresa_id)
 
@@ -1079,47 +1133,50 @@ def cargar_datos(empresa_id):
         # varias empresas cargadas en el mismo CSV al ir cambiando de
         # entorno/empresa desde la barra lateral).
         try:
-            if os.path.exists(CSV_EMPLEADOS):
-                df_csv_previo = pd.read_csv(CSV_EMPLEADOS)
-                df_csv_previo = df_csv_previo[
-                    df_csv_previo["empresa_id"].astype(str) != str(empresa_id)
-                ]
-                df_mirror = pd.concat(
-                    [df_csv_previo, df_empleados[columnas_empleados]],
-                    ignore_index=True,
-                )
-            else:
-                df_mirror = df_empleados[columnas_empleados]
-            df_mirror.to_csv(CSV_EMPLEADOS, index=False)
+            with bloqueo_csv(CSV_EMPLEADOS):
+                if os.path.exists(CSV_EMPLEADOS):
+                    df_csv_previo = pd.read_csv(CSV_EMPLEADOS)
+                    df_csv_previo = df_csv_previo[
+                        df_csv_previo["empresa_id"].astype(str)
+                        != str(empresa_id)
+                    ]
+                    df_mirror = pd.concat(
+                        [df_csv_previo, df_empleados[columnas_empleados]],
+                        ignore_index=True,
+                    )
+                else:
+                    df_mirror = df_empleados[columnas_empleados]
+                df_mirror.to_csv(CSV_EMPLEADOS, index=False)
         except Exception:
             pass
     elif os.path.exists(CSV_EMPLEADOS):
         # Supabase no disponible ahora mismo: se sigue funcionando en modo
         # 100% local con lo último que se guardó en el CSV.
-        df_empleados = pd.read_csv(CSV_EMPLEADOS)
-        df_empleados["dni"] = df_empleados["dni"].astype(str)
+        with bloqueo_csv(CSV_EMPLEADOS):
+            df_empleados = pd.read_csv(CSV_EMPLEADOS)
+            df_empleados["dni"] = df_empleados["dni"].astype(str)
 
-        if "empresa_id" not in df_empleados.columns:
-            df_empleados["empresa_id"] = empresa_id
-        if (
-            "sede_asignada" in df_empleados.columns
-            and "sede_principal" not in df_empleados.columns
-        ):
-            df_empleados.rename(
-                columns={"sede_asignada": "sede_principal"}, inplace=True
-            )
-        if "sedes_autorizadas" not in df_empleados.columns:
-            df_empleados["sedes_autorizadas"] = df_empleados[
-                "sede_principal"
-            ].apply(lambda x: json.dumps([x]) if pd.notna(x) else "[]")
+            if "empresa_id" not in df_empleados.columns:
+                df_empleados["empresa_id"] = empresa_id
+            if (
+                "sede_asignada" in df_empleados.columns
+                and "sede_principal" not in df_empleados.columns
+            ):
+                df_empleados.rename(
+                    columns={"sede_asignada": "sede_principal"}, inplace=True
+                )
+            if "sedes_autorizadas" not in df_empleados.columns:
+                df_empleados["sedes_autorizadas"] = df_empleados[
+                    "sede_principal"
+                ].apply(lambda x: json.dumps([x]) if pd.notna(x) else "[]")
 
-        if "password" not in df_empleados.columns:
-            df_empleados["password"] = PASSWORD_EMPLEADO_DEFAULT
-        if "horario_personalizado" not in df_empleados.columns:
-            df_empleados["horario_personalizado"] = "{}"
-        if "fecha_ingreso" not in df_empleados.columns:
-            df_empleados["fecha_ingreso"] = "2026-01-01"
-        df_empleados.to_csv(CSV_EMPLEADOS, index=False)
+            if "password" not in df_empleados.columns:
+                df_empleados["password"] = PASSWORD_EMPLEADO_DEFAULT
+            if "horario_personalizado" not in df_empleados.columns:
+                df_empleados["horario_personalizado"] = "{}"
+            if "fecha_ingreso" not in df_empleados.columns:
+                df_empleados["fecha_ingreso"] = "2026-01-01"
+            df_empleados.to_csv(CSV_EMPLEADOS, index=False)
     else:
         # Ni Supabase ni CSV: primer arranque totalmente local, con 2
         # trabajadores de ejemplo para que la app no se caiga.
@@ -1140,19 +1197,21 @@ def cargar_datos(empresa_id):
             "horario_personalizado": ["{}", "{}"],
             "fecha_ingreso": ["2026-01-01", "2026-01-01"],
         })
-        df_empleados.to_csv(CSV_EMPLEADOS, index=False)
+        with bloqueo_csv(CSV_EMPLEADOS):
+            df_empleados.to_csv(CSV_EMPLEADOS, index=False)
 
     sincronizar_marcaciones_nube(supabase, empresa_id)
 
     if os.path.exists(CSV_ASISTENCIA):
-        df_asistencia = pd.read_csv(CSV_ASISTENCIA)
-        if "empresa_id" not in df_asistencia.columns:
-            df_asistencia["empresa_id"] = empresa_id
-        if "Hora Salida Oficial" not in df_asistencia.columns:
-            df_asistencia["Hora Salida Oficial"] = "17:00:00"
-        if "Horas Extra (min)" not in df_asistencia.columns:
-            df_asistencia["Horas Extra (min)"] = 0
-        df_asistencia.to_csv(CSV_ASISTENCIA, index=False)
+        with bloqueo_csv(CSV_ASISTENCIA):
+            df_asistencia = pd.read_csv(CSV_ASISTENCIA)
+            if "empresa_id" not in df_asistencia.columns:
+                df_asistencia["empresa_id"] = empresa_id
+            if "Hora Salida Oficial" not in df_asistencia.columns:
+                df_asistencia["Hora Salida Oficial"] = "17:00:00"
+            if "Horas Extra (min)" not in df_asistencia.columns:
+                df_asistencia["Horas Extra (min)"] = 0
+            df_asistencia.to_csv(CSV_ASISTENCIA, index=False)
     else:
         df_asistencia = pd.DataFrame(columns=[
             "empresa_id",
@@ -1170,7 +1229,8 @@ def cargar_datos(empresa_id):
             "En Rango",
             "Foto",
         ])
-        df_asistencia.to_csv(CSV_ASISTENCIA, index=False)
+        with bloqueo_csv(CSV_ASISTENCIA):
+            df_asistencia.to_csv(CSV_ASISTENCIA, index=False)
 
     # Asegurar filtrado robusto convirtiendo a string
     df_sedes_emp = df_sedes[df_sedes["empresa_id"].astype(str) == str(empresa_id)]
@@ -1295,17 +1355,43 @@ def validar_ubicacion(lat_user, lon_user, df_sedes, sedes_permitidas=None):
     return distancias[0]
 
 
+@st.cache_data(show_spinner=False, ttl=3600)
+def _descargar_foto_storage(nombre_foto):
+    """Descarga una foto desde Supabase Storage (bucket fotos-asistencia)
+    y la deja en caché un rato, para no repetir la descarga en cada
+    autorefresh del panel. Devuelve None si no se pudo conseguir."""
+    if not supabase or not nombre_foto:
+        return None
+    try:
+        return supabase.storage.from_("fotos-asistencia").download(
+            os.path.basename(str(nombre_foto))
+        )
+    except Exception:
+        return None
+
+
 def render_avatar_with_zoom(foto_path, index_id):
-    if (
-        not foto_path
-        or pd.isna(foto_path)
-        or not os.path.exists(str(foto_path))
-    ):
+    contenido_foto = None
+
+    if foto_path and not pd.isna(foto_path):
+        if os.path.exists(str(foto_path)):
+            try:
+                with open(str(foto_path), "rb") as image_file:
+                    contenido_foto = image_file.read()
+            except Exception:
+                contenido_foto = None
+
+        if contenido_foto is None:
+            # El archivo ya no está en el disco local (se borra en cada
+            # reboot/redespliegue) — se intenta traer desde Supabase
+            # Storage, donde sí queda guardado de forma permanente.
+            contenido_foto = _descargar_foto_storage(foto_path)
+
+    if not contenido_foto:
         return "<span style='color: #6c757d;'>—</span>"
 
     try:
-        with open(str(foto_path), "rb") as image_file:
-            encoded_string = base64.b64encode(image_file.read()).decode("utf-8")
+        encoded_string = base64.b64encode(contenido_foto).decode("utf-8")
 
         img_src = f"data:image/png;base64,{encoded_string}"
         modal_id = f"img-modal-{index_id}"
@@ -1592,13 +1678,25 @@ def generar_excel_completo(
                         cell.fill, cell.font = fill_rojo, font_blanca
 
             foto_p = reg.get("Foto", "")
-            if pd.notna(foto_p) and os.path.exists(str(foto_p)):
+            if pd.notna(foto_p):
                 try:
-                    img = OpenPyxlImage(str(foto_p))
-                    img.width, img.height = 55, 38
-                    col_let = get_column_letter(11)
-                    img.anchor = f"{col_let}{r_idx}"
-                    ws_emp.add_image(img)
+                    if os.path.exists(str(foto_p)):
+                        img = OpenPyxlImage(str(foto_p))
+                    else:
+                        # No está en el disco local (se borra en cada
+                        # reboot/redespliegue): se intenta traer desde
+                        # Supabase Storage, donde queda guardada siempre.
+                        contenido_foto_xl = _descargar_foto_storage(foto_p)
+                        img = (
+                            OpenPyxlImage(io.BytesIO(contenido_foto_xl))
+                            if contenido_foto_xl
+                            else None
+                        )
+                    if img is not None:
+                        img.width, img.height = 55, 38
+                        col_let = get_column_letter(11)
+                        img.anchor = f"{col_let}{r_idx}"
+                        ws_emp.add_image(img)
                 except Exception:
                     pass
 
@@ -1695,24 +1793,25 @@ def render_modulo_sedes(df_sedes):
                             )
 
                     if os.path.exists(CSV_SEDES):
-                        df_sedes_full = pd.read_csv(CSV_SEDES)
-                        idx_s = df_sedes_full[
-                            (
-                                df_sedes_full["empresa_id"].astype(str)
-                                == str(st.session_state.empresa_id)
-                            )
-                            & (df_sedes_full["nombre_sede"] == sede_sel_ed)
-                        ].index
-                        if len(idx_s) > 0:
-                            for campo, valor in datos_sede_upd.items():
-                                if campo not in (
-                                    "empresa_id",
-                                    "nombre_sede",
-                                ):
-                                    df_sedes_full.at[
-                                        idx_s[0], campo
-                                    ] = valor
-                            df_sedes_full.to_csv(CSV_SEDES, index=False)
+                        with bloqueo_csv(CSV_SEDES):
+                            df_sedes_full = pd.read_csv(CSV_SEDES)
+                            idx_s = df_sedes_full[
+                                (
+                                    df_sedes_full["empresa_id"].astype(str)
+                                    == str(st.session_state.empresa_id)
+                                )
+                                & (df_sedes_full["nombre_sede"] == sede_sel_ed)
+                            ].index
+                            if len(idx_s) > 0:
+                                for campo, valor in datos_sede_upd.items():
+                                    if campo not in (
+                                        "empresa_id",
+                                        "nombre_sede",
+                                    ):
+                                        df_sedes_full.at[
+                                            idx_s[0], campo
+                                        ] = valor
+                                df_sedes_full.to_csv(CSV_SEDES, index=False)
                     st.success("Sede actualizada correctamente.")
                     st.rerun()
             else:
@@ -1739,14 +1838,16 @@ def render_modulo_sedes(df_sedes):
                                 )
 
                         if os.path.exists(CSV_SEDES):
-                            df_sedes_full = pd.read_csv(CSV_SEDES)
+                            with bloqueo_csv(CSV_SEDES):
+                                df_sedes_full = pd.read_csv(CSV_SEDES)
+                                df_sedes_full = pd.concat(
+                                    [df_sedes_full, pd.DataFrame([nueva_fila])],
+                                    ignore_index=True,
+                                )
+                                df_sedes_full.to_csv(CSV_SEDES, index=False)
                         else:
-                            df_sedes_full = pd.DataFrame()
-                        df_sedes_full = pd.concat(
-                            [df_sedes_full, pd.DataFrame([nueva_fila])],
-                            ignore_index=True,
-                        )
-                        df_sedes_full.to_csv(CSV_SEDES, index=False)
+                            df_sedes_full = pd.DataFrame([nueva_fila])
+                            df_sedes_full.to_csv(CSV_SEDES, index=False)
                         st.success(f"Sede {nueva_s_nombre} creada con éxito.")
                         st.rerun()
 
@@ -1766,20 +1867,21 @@ def render_modulo_sedes(df_sedes):
                                 f" ({e}). Se eliminó solo local."
                             )
                     if os.path.exists(CSV_SEDES):
-                        df_sedes_full = pd.read_csv(CSV_SEDES)
-                        df_sedes_full = df_sedes_full[
-                            ~(
-                                (
-                                    df_sedes_full["empresa_id"].astype(str)
-                                    == str(st.session_state.empresa_id)
+                        with bloqueo_csv(CSV_SEDES):
+                            df_sedes_full = pd.read_csv(CSV_SEDES)
+                            df_sedes_full = df_sedes_full[
+                                ~(
+                                    (
+                                        df_sedes_full["empresa_id"].astype(str)
+                                        == str(st.session_state.empresa_id)
+                                    )
+                                    & (
+                                        df_sedes_full["nombre_sede"]
+                                        == sede_sel_ed
+                                    )
                                 )
-                                & (
-                                    df_sedes_full["nombre_sede"]
-                                    == sede_sel_ed
-                                )
-                            )
-                        ]
-                        df_sedes_full.to_csv(CSV_SEDES, index=False)
+                            ]
+                            df_sedes_full.to_csv(CSV_SEDES, index=False)
                     st.warning("Sede eliminada.")
                     st.rerun()
 
@@ -1909,7 +2011,8 @@ def render_modulo_empresas():
                         for campo, valor in datos_emp_upd.items():
                             if campo != "empresa_id":
                                 df_e_all.at[idx_e[0], campo] = valor
-                        df_e_all.to_csv(CSV_EMPRESAS, index=False)
+                        with bloqueo_csv(CSV_EMPRESAS):
+                            df_e_all.to_csv(CSV_EMPRESAS, index=False)
                     st.success("Datos de la empresa guardados.")
                     st.rerun()
             else:
@@ -1947,7 +2050,8 @@ def render_modulo_empresas():
                                 [df_e_all, pd.DataFrame([new_e])],
                                 ignore_index=True,
                             )
-                            df_e_all.to_csv(CSV_EMPRESAS, index=False)
+                            with bloqueo_csv(CSV_EMPRESAS):
+                                df_e_all.to_csv(CSV_EMPRESAS, index=False)
                             st.success(f"Empresa '{code_c}' creada.")
                             st.rerun()
 
@@ -1964,7 +2068,8 @@ def render_modulo_empresas():
                             )
                     df_e_all = cargar_empresas()
                     df_e_all = df_e_all[df_e_all["empresa_id"] != emp_sel_ed]
-                    df_e_all.to_csv(CSV_EMPRESAS, index=False)
+                    with bloqueo_csv(CSV_EMPRESAS):
+                        df_e_all.to_csv(CSV_EMPRESAS, index=False)
                     st.warning("Empresa eliminada.")
                     st.rerun()
 
@@ -2384,16 +2489,17 @@ if opcion == "⏰ Marcar Asistencia":
                     "Foto": nombre_foto,
                 }
 
-                df_asistencia_full = (
-                    pd.read_csv(CSV_ASISTENCIA)
-                    if os.path.exists(CSV_ASISTENCIA)
-                    else pd.DataFrame()
-                )
-                df_asistencia_full = pd.concat(
-                    [df_asistencia_full, pd.DataFrame([nueva_marcacion])],
-                    ignore_index=True,
-                )
-                df_asistencia_full.to_csv(CSV_ASISTENCIA, index=False)
+                with bloqueo_csv(CSV_ASISTENCIA):
+                    df_asistencia_full = (
+                        pd.read_csv(CSV_ASISTENCIA)
+                        if os.path.exists(CSV_ASISTENCIA)
+                        else pd.DataFrame()
+                    )
+                    df_asistencia_full = pd.concat(
+                        [df_asistencia_full, pd.DataFrame([nueva_marcacion])],
+                        ignore_index=True,
+                    )
+                    df_asistencia_full.to_csv(CSV_ASISTENCIA, index=False)
 
                 if sync_nube_ok:
                     st.success(
@@ -2835,18 +2941,24 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                             cant_creados += 1
 
                                 if nuevos_registros_regularizados:
-                                    df_asist_all = pd.concat(
-                                        [
-                                            df_asist_all,
-                                            pd.DataFrame(
-                                                nuevos_registros_regularizados
-                                            ),
-                                        ],
-                                        ignore_index=True,
-                                    )
-                                    df_asist_all.to_csv(
-                                        CSV_ASISTENCIA, index=False
-                                    )
+                                    with bloqueo_csv(CSV_ASISTENCIA):
+                                        df_asist_all = (
+                                            pd.read_csv(CSV_ASISTENCIA)
+                                            if os.path.exists(CSV_ASISTENCIA)
+                                            else pd.DataFrame()
+                                        )
+                                        df_asist_all = pd.concat(
+                                            [
+                                                df_asist_all,
+                                                pd.DataFrame(
+                                                    nuevos_registros_regularizados
+                                                ),
+                                            ],
+                                            ignore_index=True,
+                                        )
+                                        df_asist_all.to_csv(
+                                            CSV_ASISTENCIA, index=False
+                                        )
                                     st.success(
                                         f"¡Se regularizaron {cant_creados} días"
                                         " como Puntual para"
@@ -2928,35 +3040,49 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                         )
 
                                     if st.button("💾 Guardar Ajuste Manual"):
-                                        indices = df_asist_actual[
-                                            (
-                                                df_asist_actual["empresa_id"].astype(str)
-                                                == str(st.session_state.empresa_id)
+                                        with bloqueo_csv(CSV_ASISTENCIA):
+                                            df_asist_fresco = (
+                                                pd.read_csv(CSV_ASISTENCIA)
+                                                if os.path.exists(
+                                                    CSV_ASISTENCIA
+                                                )
+                                                else pd.DataFrame()
                                             )
-                                            & (
-                                                df_asist_actual["Empleado"]
-                                                == emp_ind_sel
-                                            )
-                                            & (
-                                                df_asist_actual["Fecha"]
-                                                == f_edit_sel
-                                            )
-                                        ].index
+                                            indices = df_asist_fresco[
+                                                (
+                                                    df_asist_fresco[
+                                                        "empresa_id"
+                                                    ].astype(str)
+                                                    == str(
+                                                        st.session_state.empresa_id
+                                                    )
+                                                )
+                                                & (
+                                                    df_asist_fresco["Empleado"]
+                                                    == emp_ind_sel
+                                                )
+                                                & (
+                                                    df_asist_fresco["Fecha"]
+                                                    == f_edit_sel
+                                                )
+                                            ].index
 
-                                        for idx_mod in indices:
-                                            df_asist_actual.at[
-                                                idx_mod, "Estado"
-                                            ] = nuevo_est
-                                            df_asist_actual.at[
-                                                idx_mod, "Minutos Tardanza"
-                                            ] = nuevos_min_t
-                                            df_asist_actual.at[
-                                                idx_mod, "Horas Extra (min)"
-                                            ] = nuevos_min_e
+                                            for idx_mod in indices:
+                                                df_asist_fresco.at[
+                                                    idx_mod, "Estado"
+                                                ] = nuevo_est
+                                                df_asist_fresco.at[
+                                                    idx_mod,
+                                                    "Minutos Tardanza",
+                                                ] = nuevos_min_t
+                                                df_asist_fresco.at[
+                                                    idx_mod,
+                                                    "Horas Extra (min)",
+                                                ] = nuevos_min_e
 
-                                        df_asist_actual.to_csv(
-                                            CSV_ASISTENCIA, index=False
-                                        )
+                                            df_asist_fresco.to_csv(
+                                                CSV_ASISTENCIA, index=False
+                                            )
                                         st.success(
                                             f"Registro del día {f_edit_sel}"
                                             " actualizado con éxito."
@@ -3349,34 +3475,35 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 # Se actualiza también el CSV local (caché
                                 # inmediata / respaldo offline).
                                 if os.path.exists(CSV_EMPLEADOS):
-                                    df_emp_full = pd.read_csv(CSV_EMPLEADOS)
-                                    df_emp_full["dni"] = df_emp_full[
-                                        "dni"
-                                    ].astype(str)
-                                    idx_e = df_emp_full[
-                                        (
-                                            df_emp_full[
-                                                "empresa_id"
-                                            ].astype(str)
-                                            == str(
-                                                st.session_state.empresa_id
+                                    with bloqueo_csv(CSV_EMPLEADOS):
+                                        df_emp_full = pd.read_csv(CSV_EMPLEADOS)
+                                        df_emp_full["dni"] = df_emp_full[
+                                            "dni"
+                                        ].astype(str)
+                                        idx_e = df_emp_full[
+                                            (
+                                                df_emp_full[
+                                                    "empresa_id"
+                                                ].astype(str)
+                                                == str(
+                                                    st.session_state.empresa_id
+                                                )
                                             )
-                                        )
-                                        & (
-                                            df_emp_full["dni"].astype(str)
-                                            == val_dni
-                                        )
-                                    ].index
-                                    if len(idx_e) > 0:
-                                        for campo, valor in (
-                                            datos_actualizados.items()
-                                        ):
-                                            df_emp_full.at[
-                                                idx_e[0], campo
-                                            ] = valor
-                                        df_emp_full.to_csv(
-                                            CSV_EMPLEADOS, index=False
-                                        )
+                                            & (
+                                                df_emp_full["dni"].astype(str)
+                                                == val_dni
+                                            )
+                                        ].index
+                                        if len(idx_e) > 0:
+                                            for campo, valor in (
+                                                datos_actualizados.items()
+                                            ):
+                                                df_emp_full.at[
+                                                    idx_e[0], campo
+                                                ] = valor
+                                            df_emp_full.to_csv(
+                                                CSV_EMPLEADOS, index=False
+                                            )
 
                                 st.success(
                                     "Datos del trabajador actualizados."
@@ -3456,22 +3583,23 @@ elif opcion == "🔐 Panel de Gestión / Admin":
 
                                         # Copia local (caché / respaldo
                                         # offline).
-                                        if os.path.exists(CSV_EMPLEADOS):
-                                            df_emp_full = pd.read_csv(
-                                                CSV_EMPLEADOS
+                                        with bloqueo_csv(CSV_EMPLEADOS):
+                                            if os.path.exists(CSV_EMPLEADOS):
+                                                df_emp_full = pd.read_csv(
+                                                    CSV_EMPLEADOS
+                                                )
+                                            else:
+                                                df_emp_full = pd.DataFrame()
+                                            df_emp_full = pd.concat(
+                                                [
+                                                    df_emp_full,
+                                                    pd.DataFrame([nuevo_emp]),
+                                                ],
+                                                ignore_index=True,
                                             )
-                                        else:
-                                            df_emp_full = pd.DataFrame()
-                                        df_emp_full = pd.concat(
-                                            [
-                                                df_emp_full,
-                                                pd.DataFrame([nuevo_emp]),
-                                            ],
-                                            ignore_index=True,
-                                        )
-                                        df_emp_full.to_csv(
-                                            CSV_EMPLEADOS, index=False
-                                        )
+                                            df_emp_full.to_csv(
+                                                CSV_EMPLEADOS, index=False
+                                            )
                                         st.success(
                                             "Empleado registrado"
                                             " correctamente."
@@ -3498,26 +3626,27 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                         )
 
                                 if os.path.exists(CSV_EMPLEADOS):
-                                    df_emp_full = pd.read_csv(CSV_EMPLEADOS)
-                                    df_emp_full = df_emp_full[
-                                        ~(
-                                            (
-                                                df_emp_full[
-                                                    "empresa_id"
-                                                ].astype(str)
-                                                == str(
-                                                    st.session_state.empresa_id
+                                    with bloqueo_csv(CSV_EMPLEADOS):
+                                        df_emp_full = pd.read_csv(CSV_EMPLEADOS)
+                                        df_emp_full = df_emp_full[
+                                            ~(
+                                                (
+                                                    df_emp_full[
+                                                        "empresa_id"
+                                                    ].astype(str)
+                                                    == str(
+                                                        st.session_state.empresa_id
+                                                    )
+                                                )
+                                                & (
+                                                    df_emp_full["dni"].astype(str)
+                                                    == val_dni
                                                 )
                                             )
-                                            & (
-                                                df_emp_full["dni"].astype(str)
-                                                == val_dni
-                                            )
+                                        ]
+                                        df_emp_full.to_csv(
+                                            CSV_EMPLEADOS, index=False
                                         )
-                                    ]
-                                    df_emp_full.to_csv(
-                                        CSV_EMPLEADOS, index=False
-                                    )
                                 st.warning("Trabajador eliminado.")
                                 st.rerun()
 
@@ -3620,24 +3749,25 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 )
 
                         if os.path.exists(CSV_EMPLEADOS):
-                            df_emp_full = pd.read_csv(CSV_EMPLEADOS)
-                            df_emp_full["dni"] = df_emp_full["dni"].astype(
-                                str
-                            )
-                            idx_h = df_emp_full[
-                                (
-                                    df_emp_full["empresa_id"].astype(str)
-                                    == str(st.session_state.empresa_id)
+                            with bloqueo_csv(CSV_EMPLEADOS):
+                                df_emp_full = pd.read_csv(CSV_EMPLEADOS)
+                                df_emp_full["dni"] = df_emp_full["dni"].astype(
+                                    str
                                 )
-                                & (df_emp_full["dni"] == dni_h)
-                            ].index
-                            if len(idx_h) > 0:
-                                df_emp_full.at[
-                                    idx_h[0], "horario_personalizado"
-                                ] = horario_json
-                                df_emp_full.to_csv(
-                                    CSV_EMPLEADOS, index=False
-                                )
+                                idx_h = df_emp_full[
+                                    (
+                                        df_emp_full["empresa_id"].astype(str)
+                                        == str(st.session_state.empresa_id)
+                                    )
+                                    & (df_emp_full["dni"] == dni_h)
+                                ].index
+                                if len(idx_h) > 0:
+                                    df_emp_full.at[
+                                        idx_h[0], "horario_personalizado"
+                                    ] = horario_json
+                                    df_emp_full.to_csv(
+                                        CSV_EMPLEADOS, index=False
+                                    )
                         st.success(
                             "Horario individual guardado correctamente."
                         )
@@ -3948,6 +4078,139 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 st.error(
                                     f"Error al limpiar la nube: {e_purge}"
                                 )
+
+                    st.divider()
+                    st.markdown(
+                        "#### 📂 Visor de Histórico (respaldos ya"
+                        " descargados)"
+                    )
+                    st.caption(
+                        "Sube aquí un .zip de respaldo que ya hayas"
+                        " descargado antes con el botón de arriba. Se abre"
+                        " solo en tu navegador, sin tocar Supabase — así"
+                        " puedes seguir viendo, filtrando por mes y"
+                        " descargando esos períodos aunque ya se hayan"
+                        " borrado de la nube."
+                    )
+
+                    archivo_historico = st.file_uploader(
+                        "Subir archivo de respaldo (.zip):",
+                        type=["zip"],
+                        key="uploader_historico",
+                    )
+
+                    if archivo_historico is not None:
+                        try:
+                            with zipfile.ZipFile(archivo_historico) as zf_h:
+                                nombres_excel = [
+                                    n
+                                    for n in zf_h.namelist()
+                                    if n.lower().endswith(".xlsx")
+                                ]
+                                if not nombres_excel:
+                                    st.error(
+                                        "Este .zip no contiene un Excel de"
+                                        " asistencia reconocible."
+                                    )
+                                else:
+                                    with zf_h.open(nombres_excel[0]) as f_x:
+                                        df_historico = pd.read_excel(f_x)
+
+                                    st.success(
+                                        f"✅ Se cargaron"
+                                        f" {len(df_historico)} registros"
+                                        " del histórico."
+                                    )
+
+                                    df_mostrar_h = df_historico
+                                    if "Fecha" in df_historico.columns:
+                                        df_historico["Fecha"] = (
+                                            pd.to_datetime(
+                                                df_historico["Fecha"],
+                                                errors="coerce",
+                                            )
+                                        )
+                                        meses_disp_h = sorted(
+                                            df_historico["Fecha"]
+                                            .dt.to_period("M")
+                                            .astype(str)
+                                            .dropna()
+                                            .unique()
+                                        )
+                                        mes_hist_sel = st.selectbox(
+                                            "Filtrar por mes:",
+                                            ["Todos"] + list(meses_disp_h),
+                                            key="mes_hist_sel",
+                                        )
+                                        if mes_hist_sel != "Todos":
+                                            df_mostrar_h = df_historico[
+                                                df_historico["Fecha"]
+                                                .dt.to_period("M")
+                                                .astype(str)
+                                                == mes_hist_sel
+                                            ]
+
+                                    st.dataframe(
+                                        df_mostrar_h,
+                                        use_container_width=True,
+                                        hide_index=True,
+                                    )
+
+                                    buffer_hist = io.BytesIO()
+                                    df_mostrar_h.to_excel(
+                                        buffer_hist,
+                                        index=False,
+                                        engine="openpyxl",
+                                    )
+                                    buffer_hist.seek(0)
+                                    st.download_button(
+                                        "⬇️ Descargar este período"
+                                        " filtrado (Excel)",
+                                        data=buffer_hist.getvalue(),
+                                        file_name=(
+                                            "historico_filtrado_"
+                                            f"{st.session_state.get('mes_hist_sel', 'completo')}.xlsx"
+                                        ),
+                                        mime=(
+                                            "application/vnd.openxmlformats"
+                                            "-officedocument.spreadsheetml"
+                                            ".sheet"
+                                        ),
+                                        use_container_width=True,
+                                        key="descargar_historico_filtrado",
+                                    )
+
+                                    nombres_fotos_h = [
+                                        n
+                                        for n in zf_h.namelist()
+                                        if n.startswith("fotos/")
+                                    ]
+                                    if nombres_fotos_h:
+                                        with st.expander(
+                                            "📸 Ver fotos incluidas en este"
+                                            f" respaldo ({len(nombres_fotos_h)})"
+                                        ):
+                                            foto_sel_hist = st.selectbox(
+                                                "Elegir foto:",
+                                                nombres_fotos_h,
+                                                key="foto_sel_hist",
+                                            )
+                                            if foto_sel_hist:
+                                                with zf_h.open(
+                                                    foto_sel_hist
+                                                ) as f_foto:
+                                                    st.image(
+                                                        f_foto.read(),
+                                                        width=300,
+                                                    )
+                        except zipfile.BadZipFile:
+                            st.error(
+                                "El archivo subido no es un .zip válido."
+                            )
+                        except Exception as e_hist:
+                            st.error(
+                                f"No se pudo leer el respaldo: {e_hist}"
+                            )
 
                 with subtab_seguridad:
                     st.markdown("#### 🔑 Administración de Claves de Acceso")
