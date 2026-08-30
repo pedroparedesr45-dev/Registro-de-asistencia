@@ -3,8 +3,10 @@ from supabase import create_client, Client
 import base64
 import calendar
 import fcntl
+import hashlib
 import io
 import json
+import logging
 import os
 import smtplib
 import zipfile
@@ -94,6 +96,37 @@ def ya_marco_hoy(supabase, empresa_id, dni, nombre, fecha_str, tipo_marcacion):
     return False
 
 
+def validar_foto_captura(img_file, max_mb=8):
+    """Valida la foto tomada con la cámara antes de guardarla y subirla:
+    que exista, que no pese más de la cuenta, y que sea una imagen
+    válida y no esté dañada. Devuelve (es_valida, mensaje_de_error)."""
+    if img_file is None:
+        return False, "No se detectó ninguna foto."
+    if img_file.size == 0:
+        return False, "La foto capturada está vacía. Vuelve a intentarlo."
+
+    tam_mb = img_file.size / (1024 * 1024)
+    if tam_mb > max_mb:
+        return False, (
+            f"La foto pesa {tam_mb:.1f} MB, más del máximo permitido"
+            f" ({max_mb} MB). Vuelve a tomarla."
+        )
+
+    try:
+        img_file.seek(0)
+        imagen_prueba = Image.open(img_file)
+        imagen_prueba.verify()
+    except Exception:
+        return False, (
+            "El archivo de la foto está dañado o no es una imagen"
+            " válida. Vuelve a tomarla."
+        )
+    finally:
+        img_file.seek(0)
+
+    return True, ""
+
+
 def enviar_marcacion_supabase(empresa_id, dni, nombre, fecha, hora, tipo, foto_url="", gps=""):
     if not supabase:
         return False
@@ -117,6 +150,57 @@ def enviar_marcacion_supabase(empresa_id, dni, nombre, fecha, hora, tipo, foto_u
 # ---------------------------------------------------------
 # 1. Configuración de página e inicialización
 # ---------------------------------------------------------
+
+# Logger: los errores que antes se silenciaban del todo (except/pass)
+# ahora quedan registrados aquí. No se le muestra nada al usuario (la
+# experiencia no cambia), pero tú puedes revisarlos en Streamlit Cloud →
+# tu app → menú (⋮) → "Manage app" → pestaña de Logs, para diagnosticar
+# fallas que hoy pasan totalmente desapercibidas.
+logging.basicConfig(
+    level=logging.WARNING,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+logger = logging.getLogger("asistencia_app")
+
+
+# --- Hash de PINs y contraseñas ---
+# Los PINs (Admin/Visor/Master) y las contraseñas de trabajadores ya NO
+# se guardan como texto plano: se guarda su hash (SHA-256 + sal fija de
+# la app). Así, si alguna vez alguien accede directo a la base de datos
+# de Supabase, no puede leer los PINs/contraseñas reales, solo el hash
+# (que no se puede "revertir" a la clave original).
+# La CLAVE DE EXCEL es la única excepción a propósito: openpyxl necesita
+# el texto real para proteger la hoja de cálculo, así que esa se sigue
+# guardando tal cual (igual nunca sale del entorno del developer).
+_SAL_HASH = "asistencia_saas_v1"
+
+
+def _hash_clave(valor_plano):
+    """Convierte un PIN/contraseña en texto plano a su hash SHA-256."""
+    return hashlib.sha256(
+        f"{_SAL_HASH}:{valor_plano}".encode("utf-8")
+    ).hexdigest()
+
+
+def clave_coincide(valor_ingresado, valor_guardado):
+    """Compara lo que la persona escribió contra lo guardado. Compatible
+    con instalaciones viejas que todavía tengan el valor en texto plano
+    (factory PINs, o Secrets de Streamlit): si lo guardado no tiene forma
+    de hash SHA-256 (64 caracteres hexadecimales), se compara como texto
+    plano; si sí la tiene, se compara el hash. Esto permite migrar sin
+    romper logins existentes — en cuanto alguien guarda una clave nueva
+    desde el panel, esa clave queda hasheada para siempre."""
+    if valor_guardado is None:
+        return False
+    valor_guardado = str(valor_guardado)
+    parece_hash = len(valor_guardado) == 64 and all(
+        c in "0123456789abcdef" for c in valor_guardado.lower()
+    )
+    if parece_hash:
+        return _hash_clave(valor_ingresado) == valor_guardado
+    return str(valor_ingresado) == valor_guardado
+
+
 st.set_page_config(
     page_title="Sistema de Asistencia y Nómina SaaS Multi-Empresa",
     layout="wide",
@@ -642,8 +726,8 @@ def cargar_empresas():
             if supabase:
                 try:
                     guardar_empresa_supabase(supabase, empresa_dev_default)
-                except Exception:
-                    pass
+                except Exception as _e_silenciosa:
+                    logger.warning(f"Error controlado (ignorado para el usuario): {_e_silenciosa}")
             df = pd.concat(
                 [df, pd.DataFrame([empresa_dev_default])],
                 ignore_index=True,
@@ -653,8 +737,8 @@ def cargar_empresas():
         try:
             with bloqueo_csv(CSV_EMPRESAS):
                 df[columnas_empresas].to_csv(CSV_EMPRESAS, index=False)
-        except Exception:
-            pass
+        except Exception as _e_silenciosa:
+            logger.warning(f"Error controlado (ignorado para el usuario): {_e_silenciosa}")
         return df
 
     if os.path.exists(CSV_EMPRESAS):
@@ -898,8 +982,8 @@ def obtener_password_empleado(supabase, empresa_id, dni, password_csv):
             )
             if res.data:
                 return res.data[0]["password"]
-        except Exception:
-            pass
+        except Exception as _e_silenciosa:
+            logger.warning(f"Error controlado (ignorado para el usuario): {_e_silenciosa}")
     return password_csv
 
 
@@ -1066,8 +1150,8 @@ def cargar_datos(empresa_id):
                 else:
                     df_mirror = df_sedes[columnas_sedes]
                 df_mirror.to_csv(CSV_SEDES, index=False)
-        except Exception:
-            pass
+        except Exception as _e_silenciosa:
+            logger.warning(f"Error controlado (ignorado para el usuario): {_e_silenciosa}")
     elif os.path.exists(CSV_SEDES):
         # Supabase no disponible ahora mismo: modo 100% local con lo
         # último que se guardó en el CSV.
@@ -1166,8 +1250,8 @@ def cargar_datos(empresa_id):
                 else:
                     df_mirror = df_empleados[columnas_empleados]
                 df_mirror.to_csv(CSV_EMPLEADOS, index=False)
-        except Exception:
-            pass
+        except Exception as _e_silenciosa:
+            logger.warning(f"Error controlado (ignorado para el usuario): {_e_silenciosa}")
     elif os.path.exists(CSV_EMPLEADOS):
         # Supabase no disponible ahora mismo: se sigue funcionando en modo
         # 100% local con lo último que se guardó en el CSV.
@@ -1325,8 +1409,8 @@ def obtener_horario_oficial(emp_row, df_sedes, fecha_obj):
                     h_dict[nombre_dia]["entrada"],
                     h_dict[nombre_dia]["salida"],
                 )
-        except Exception:
-            pass
+        except Exception as _e_silenciosa:
+            logger.warning(f"Error controlado (ignorado para el usuario): {_e_silenciosa}")
 
     sede_emp = emp_row["sede_principal"]
     datos_sede = df_sedes[df_sedes["nombre_sede"] == sede_emp]
@@ -1463,8 +1547,8 @@ def render_custom_table(lista_registros):
             try:
                 fecha_dt = pd.to_datetime(fecha_raw)
                 current_week = fecha_dt.isocalendar()[1]
-            except Exception:
-                pass
+            except Exception as _e_silenciosa:
+                logger.warning(f"Error controlado (ignorado para el usuario): {_e_silenciosa}")
 
         is_new_week = (
             previous_week is not None
@@ -1726,8 +1810,8 @@ def generar_excel_completo(
                         col_let = get_column_letter(11)
                         img.anchor = f"{col_let}{r_idx}"
                         ws_emp.add_image(img)
-                except Exception:
-                    pass
+                except Exception as _e_silenciosa:
+                    logger.warning(f"Error controlado (ignorado para el usuario): {_e_silenciosa}")
 
             r_idx += 1
 
@@ -2162,15 +2246,15 @@ if opcion == "⏰ Marcar Asistencia":
             if st.button("Ingresar al Panel", key="btn_login_admin_movil"):
                 if empresa_admin_mov:
                     st.session_state.empresa_id = empresa_admin_mov
-                    if pin_mov == st.session_state.pin_admin:
+                    if clave_coincide(pin_mov, st.session_state.pin_admin):
                         st.session_state.autenticado = True
                         st.session_state.rol = "admin"
                         st.rerun()
-                    elif pin_mov == st.session_state.pin_visor:
+                    elif clave_coincide(pin_mov, st.session_state.pin_visor):
                         st.session_state.autenticado = True
                         st.session_state.rol = "visor"
                         st.rerun()
-                    elif pin_mov == st.session_state.pin_master:
+                    elif clave_coincide(pin_mov, st.session_state.pin_master):
                         st.session_state.autenticado = True
                         st.session_state.rol = "master"
                         st.rerun()
@@ -2227,8 +2311,8 @@ if opcion == "⏰ Marcar Asistencia":
                                 fila_emp["dni"],
                                 str(fila_emp["password"]),
                             )
-                            login_ok = (
-                                str(password_vigente) == pass_input.strip()
+                            login_ok = clave_coincide(
+                                pass_input.strip(), password_vigente
                             )
                         if login_ok:
                             st.session_state.emp_login_ok = True
@@ -2277,7 +2361,9 @@ if opcion == "⏰ Marcar Asistencia":
                     datos_emp["dni"],
                     str(datos_emp["password"]),
                 )
-                if str(password_vigente_actual) != pass_actual.strip():
+                if not clave_coincide(
+                    pass_actual.strip(), password_vigente_actual
+                ):
                     st.error("La contraseña actual no es correcta.")
                 elif not pass_nueva.strip():
                     st.warning("Escribe la nueva contraseña.")
@@ -2294,7 +2380,7 @@ if opcion == "⏰ Marcar Asistencia":
                             supabase,
                             st.session_state.empresa_id,
                             datos_emp["dni"],
-                            pass_nueva.strip(),
+                            _hash_clave(pass_nueva.strip()),
                         )
                         st.success(
                             "✅ Contraseña actualizada. Úsala la próxima vez"
@@ -2397,6 +2483,11 @@ if opcion == "⏰ Marcar Asistencia":
                 )
 
             if st.button("Confirmar Marcación", disabled=btn_disabled):
+                foto_valida, msg_foto = validar_foto_captura(img_file)
+                if not foto_valida:
+                    st.error(f"📷 {msg_foto}")
+                    st.stop()
+
                 now = ahora_peru().replace(tzinfo=None)
                 fecha_str = now.strftime("%Y-%m-%d")
                 hora_str = now.strftime("%H:%M:%S")
@@ -2445,61 +2536,62 @@ if opcion == "⏰ Marcar Asistencia":
 
                 # --- ENVÍO COMPLETO A SUPABASE (NUBE EFÍMERA) ---
                 sync_nube_ok = False
-                if supabase:
-                    try:
-                        solo_nombre_foto = os.path.basename(nombre_foto)
-                        with open(nombre_foto, "rb") as f:
-                            supabase.storage.from_("fotos-asistencia").upload(
-                                solo_nombre_foto,
-                                f,
-                                file_options={"upsert": "true"},
-                            )
+                with st.spinner("📤 Guardando tu marcación y foto..."):
+                    if supabase:
+                        try:
+                            solo_nombre_foto = os.path.basename(nombre_foto)
+                            with open(nombre_foto, "rb") as f:
+                                supabase.storage.from_("fotos-asistencia").upload(
+                                    solo_nombre_foto,
+                                    f,
+                                    file_options={"upsert": "true"},
+                                )
 
-                        data_nube = {
-                            "empresa_id": str(st.session_state.empresa_id),
-                            "dni": str(datos_emp.get('dni', '')),
-                            "nombre": str(datos_emp.get('nombre', '')),
-                            "tipo": str(tipo_marcacion),
-                            "fecha": str(fecha_str),
-                            "hora_registrada": str(hora_str),
-                            "hora_entrada_oficial": str(hora_oficial),
-                            "hora_salida_oficial": str(hora_salida_oficial),
-                            "estado": str(estado),
-                            "minutos_tardanza": int(minutos_tardanza),
-                            "horas_extra_min": int(minutos_extra),
-                            "sede_detectada": str(sede_detectada),
-                            "distancia_m": float(round(distancia, 1)),
-                            "en_rango": "SÍ" if en_rango else "NO",
-                            "foto_url": solo_nombre_foto,
-                            "descargado_master": False,
-                            "descargado_cliente": False
-                        }
-                        supabase.table("marcaciones_efimeras").insert(data_nube).execute()
-                        sync_nube_ok = True
-                    except Exception as err_nube:
-                        msg = str(err_nube)
-                        if "Bucket not found" in msg:
-                            st.error(
-                                "☁️ No se pudo sincronizar con la Nube: el bucket "
-                                "'fotos-asistencia' no existe en tu proyecto de "
-                                "Supabase. Créalo en Storage → New bucket con ese "
-                                "nombre exacto y agrega políticas de acceso."
-                            )
-                        elif "row-level security" in msg.lower() or "RLS" in msg or "403" in msg or "401" in msg:
-                            st.error(
-                                "☁️ No se pudo sincronizar con la Nube: la petición "
-                                "fue bloqueada por Row Level Security (RLS). Revisa "
-                                "las políticas de la tabla 'marcaciones_efimeras' en "
-                                "Supabase (INSERT/SELECT/UPDATE para el rol usado por "
-                                "tu API key)."
-                            )
-                        else:
-                            st.error(f"☁️ No se pudo sincronizar con la Nube: {msg}")
-                else:
-                    st.warning(
-                        "☁️ Cliente de Supabase no configurado: la marcación se "
-                        "guardará solo localmente."
-                    )
+                            data_nube = {
+                                "empresa_id": str(st.session_state.empresa_id),
+                                "dni": str(datos_emp.get('dni', '')),
+                                "nombre": str(datos_emp.get('nombre', '')),
+                                "tipo": str(tipo_marcacion),
+                                "fecha": str(fecha_str),
+                                "hora_registrada": str(hora_str),
+                                "hora_entrada_oficial": str(hora_oficial),
+                                "hora_salida_oficial": str(hora_salida_oficial),
+                                "estado": str(estado),
+                                "minutos_tardanza": int(minutos_tardanza),
+                                "horas_extra_min": int(minutos_extra),
+                                "sede_detectada": str(sede_detectada),
+                                "distancia_m": float(round(distancia, 1)),
+                                "en_rango": "SÍ" if en_rango else "NO",
+                                "foto_url": solo_nombre_foto,
+                                "descargado_master": False,
+                                "descargado_cliente": False
+                            }
+                            supabase.table("marcaciones_efimeras").insert(data_nube).execute()
+                            sync_nube_ok = True
+                        except Exception as err_nube:
+                            msg = str(err_nube)
+                            if "Bucket not found" in msg:
+                                st.error(
+                                    "☁️ No se pudo sincronizar con la Nube: el bucket "
+                                    "'fotos-asistencia' no existe en tu proyecto de "
+                                    "Supabase. Créalo en Storage → New bucket con ese "
+                                    "nombre exacto y agrega políticas de acceso."
+                                )
+                            elif "row-level security" in msg.lower() or "RLS" in msg or "403" in msg or "401" in msg:
+                                st.error(
+                                    "☁️ No se pudo sincronizar con la Nube: la petición "
+                                    "fue bloqueada por Row Level Security (RLS). Revisa "
+                                    "las políticas de la tabla 'marcaciones_efimeras' en "
+                                    "Supabase (INSERT/SELECT/UPDATE para el rol usado por "
+                                    "tu API key)."
+                                )
+                            else:
+                                st.error(f"☁️ No se pudo sincronizar con la Nube: {msg}")
+                    else:
+                        st.warning(
+                            "☁️ Cliente de Supabase no configurado: la marcación se "
+                            "guardará solo localmente."
+                        )
 
                 nueva_marcacion = {
                     "empresa_id": st.session_state.empresa_id,
@@ -2561,15 +2653,15 @@ elif opcion == "🔐 Panel de Gestión / Admin":
         if st.button("Ingresar al Panel"):
             if empresa_admin:
                 st.session_state.empresa_id = empresa_admin
-                if pin == st.session_state.pin_admin:
+                if clave_coincide(pin, st.session_state.pin_admin):
                     st.session_state.autenticado = True
                     st.session_state.rol = "admin"
                     st.rerun()
-                elif pin == st.session_state.pin_visor:
+                elif clave_coincide(pin, st.session_state.pin_visor):
                     st.session_state.autenticado = True
                     st.session_state.rol = "visor"
                     st.rerun()
-                elif pin == st.session_state.pin_master:
+                elif clave_coincide(pin, st.session_state.pin_master):
                     st.session_state.autenticado = True
                     st.session_state.rol = "master"
                     st.rerun()
@@ -2687,13 +2779,14 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                     "📥 Descargar Reporte Excel Completo",
                     use_container_width=True,
                 ):
-                    excel_bytes = generar_excel_completo(
-                        df_asistencia,
-                        df_empleados,
-                        mes_sel,
-                        anio_sel,
-                        st.session_state.clave_excel,
-                    )
+                    with st.spinner("📊 Generando el Excel completo..."):
+                        excel_bytes = generar_excel_completo(
+                            df_asistencia,
+                            df_empleados,
+                            mes_sel,
+                            anio_sel,
+                            st.session_state.clave_excel,
+                        )
                     st.download_button(
                         label="💾 Confirmar Descarga de Excel",
                         data=excel_bytes,
@@ -3463,7 +3556,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                         except Exception:
                             val_sed_a = [val_sed_p] if val_sed_p else []
 
-                        val_pas = str(datos_e.get("password", PASSWORD_EMPLEADO_DEFAULT))
+                        val_pas = ""  # nunca se muestra el hash guardado
                     else:
                         val_dni = ""
                         val_nom = ""
@@ -3500,7 +3593,12 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                     )
 
                     e_pass = st.text_input(
-                        "Contraseña Marcación:",
+                        "Contraseña Marcación:"
+                        + (
+                            " (déjala en blanco para no cambiarla)"
+                            if is_edit_e
+                            else ""
+                        ),
                         value=val_pas,
                         type="password",
                     )
@@ -3530,8 +3628,15 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     "sedes_autorizadas": json.dumps(
                                         sedes_finales
                                     ),
-                                    "password": e_pass,
                                 }
+                                if e_pass.strip():
+                                    # Solo se toca la contraseña si el
+                                    # admin escribió una nueva; si la dejó
+                                    # en blanco, la que ya estaba guardada
+                                    # no se modifica.
+                                    datos_actualizados["password"] = (
+                                        _hash_clave(e_pass.strip())
+                                    )
 
                                 if supabase:
                                     try:
@@ -3632,7 +3737,11 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                                 sedes_finales
                                             ),
                                             "cargo": e_cargo.strip().upper(),
-                                            "password": e_pass,
+                                            "password": _hash_clave(
+                                                e_pass.strip()
+                                                if e_pass.strip()
+                                                else PASSWORD_EMPLEADO_DEFAULT
+                                            ),
                                             "horario_personalizado": "{}",
                                             "fecha_ingreso": (
                                                 hoy_peru().strftime(
@@ -3928,6 +4037,13 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                             )
                         else:
                             try:
+                                _spinner_backup = st.empty()
+                                _spinner_backup.info(
+                                    "⏳ Generando el respaldo (Excel +"
+                                    " fotos) y enviando la copia por"
+                                    " correo... esto puede tardar unos"
+                                    " segundos, no cierres esta pestaña."
+                                )
                                 res = (
                                     supabase.table("marcaciones_efimeras")
                                     .select("*")
@@ -4056,6 +4172,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     st.session_state.backup_email_ok = (
                                         email_ok
                                     )
+                                    _spinner_backup.empty()
                                     st.success(
                                         "✅ Respaldo generado con"
                                         f" {len(registros)} registros."
@@ -4068,6 +4185,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                         )
                                     )
                             except Exception as e_sync:
+                                _spinner_backup.empty()
                                 st.error(
                                     "Error al generar el respaldo:"
                                     f" {e_sync}"
@@ -4292,56 +4410,92 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                         "Estos cambios se guardan en Supabase y aplican a"
                         f" la empresa `{st.session_state.empresa_id}`."
                     )
+                    st.info(
+                        "🔒 Por seguridad, los PINs y contraseñas ya no se"
+                        " muestran en pantalla ni se guardan como texto"
+                        " plano (se guarda un hash). Deja un campo en"
+                        " blanco si no quieres cambiar esa clave."
+                    )
 
                     p_admin = st.text_input(
-                        "PIN SuperAdmin:",
-                        value=st.session_state.pin_admin,
+                        "Nuevo PIN SuperAdmin (déjalo en blanco para no"
+                        " cambiarlo):",
+                        value="",
                         type="password",
                     )
                     p_visor = st.text_input(
-                        "PIN Admin:",
-                        value=st.session_state.pin_visor,
+                        "Nuevo PIN Admin (déjalo en blanco para no"
+                        " cambiarlo):",
+                        value="",
                         type="password",
                     )
 
                     if st.session_state.rol == "master":
                         p_master = st.text_input(
-                            "PIN Developer:",
-                            value=st.session_state.pin_master,
+                            "Nuevo PIN Developer (déjalo en blanco para no"
+                            " cambiarlo):",
+                            value="",
                             type="password",
                         )
                     else:
-                        p_master = st.session_state.pin_master
+                        p_master = ""
                         st.caption(
                             "🔒 El PIN Developer solo es visible y editable"
                             " para quien ingresa con esa clave."
                         )
 
                     c_excel = st.text_input(
-                        "Clave de Protección Excel:",
-                        value=st.session_state.clave_excel,
+                        "Nueva Clave de Protección Excel (déjala en blanco"
+                        " para no cambiarla):",
+                        value="",
                         type="password",
                     )
 
                     if st.button("Guardar Nuevas Claves"):
-                        try:
-                            guardar_configuracion_sistema(
-                                supabase,
-                                st.session_state.empresa_id,
-                                pin_admin=p_admin,
-                                pin_visor=p_visor,
-                                pin_master=p_master,
-                                clave_excel=c_excel,
+                        campos_a_guardar = {}
+                        if p_admin:
+                            campos_a_guardar["pin_admin"] = _hash_clave(
+                                p_admin
                             )
-                            st.session_state.pin_admin = p_admin
-                            st.session_state.pin_visor = p_visor
-                            st.session_state.pin_master = p_master
-                            st.session_state.clave_excel = c_excel
-                            st.success(
-                                "✅ Configuración de seguridad actualizada y"
-                                " guardada en Supabase."
+                        if p_visor:
+                            campos_a_guardar["pin_visor"] = _hash_clave(
+                                p_visor
                             )
-                        except Exception as e_cfg:
-                            st.error(
-                                f"No se pudo guardar en Supabase: {e_cfg}"
+                        if p_master:
+                            campos_a_guardar["pin_master"] = _hash_clave(
+                                p_master
                             )
+                        if c_excel:
+                            # La clave de Excel se guarda tal cual (texto
+                            # plano) porque openpyxl necesita el valor
+                            # real para proteger la hoja de cálculo; no
+                            # es una clave de login como las demás.
+                            campos_a_guardar["clave_excel"] = c_excel
+
+                        if not campos_a_guardar:
+                            st.info(
+                                "No escribiste ningún valor nuevo, no se"
+                                " guardó nada."
+                            )
+                        else:
+                            try:
+                                guardar_configuracion_sistema(
+                                    supabase,
+                                    st.session_state.empresa_id,
+                                    **campos_a_guardar,
+                                )
+                                for campo, valor in (
+                                    campos_a_guardar.items()
+                                ):
+                                    setattr(
+                                        st.session_state, campo, valor
+                                    )
+                                st.success(
+                                    "✅ Configuración de seguridad"
+                                    " actualizada y guardada en Supabase."
+                                )
+                            except Exception as e_cfg:
+                                st.error(
+                                    f"No se pudo guardar en Supabase:"
+                                    f" {e_cfg}"
+                                )
