@@ -1378,23 +1378,47 @@ def cargar_datos(empresa_id):
 if not VISTA_TRABAJADOR_MOVIL:
     st.sidebar.title("📌 Menú Principal")
 
-    entorno_sel = st.sidebar.radio(
-        "🌐 Entorno de Ejecución:",
-        ["🚀 Producción", "🧪 Desarrollo / Sandbox"],
-        index=0 if st.session_state.entorno == "PROD" else 1,
-    )
+    if "dev_entorno_desbloqueado" not in st.session_state:
+        st.session_state.dev_entorno_desbloqueado = False
 
-    nuevo_entorno = "PROD" if entorno_sel == "🚀 Producción" else "DEV"
+    if not st.session_state.dev_entorno_desbloqueado:
+        # Entorno DEV oculto para las empresas cliente: se fuerza PROD y
+        # solo queda un candado discreto (sin texto explicativo) que pide
+        # el PIN Developer para revelar el selector de entorno. La versión
+        # celular no se toca — sigue igual que antes.
+        if st.session_state.entorno != "PROD":
+            st.session_state.entorno = "PROD"
+        with st.sidebar.expander("🔒", expanded=False):
+            _pin_candado_dev = st.text_input(
+                "PIN",
+                type="password",
+                key="pin_candado_dev_input",
+                label_visibility="collapsed",
+            )
+            if st.button("🔓", key="btn_candado_dev"):
+                if clave_coincide(_pin_candado_dev, st.session_state.pin_master):
+                    st.session_state.dev_entorno_desbloqueado = True
+                    st.rerun()
+                else:
+                    st.error("PIN Incorrecto.")
+    else:
+        entorno_sel = st.sidebar.radio(
+            "🌐 Entorno de Ejecución:",
+            ["🚀 Producción", "🧪 Desarrollo / Sandbox"],
+            index=0 if st.session_state.entorno == "PROD" else 1,
+        )
 
-    if nuevo_entorno != st.session_state.entorno:
-        st.session_state.entorno = nuevo_entorno
-        df_emp_todas = cargar_empresas()
-        empresas_filtradas = df_emp_todas[
-            df_emp_todas["entorno"] == st.session_state.entorno
-        ]
-        if not empresas_filtradas.empty:
-            st.session_state.empresa_id = empresas_filtradas.iloc[0]["empresa_id"]
-        st.rerun()
+        nuevo_entorno = "PROD" if entorno_sel == "🚀 Producción" else "DEV"
+
+        if nuevo_entorno != st.session_state.entorno:
+            st.session_state.entorno = nuevo_entorno
+            df_emp_todas = cargar_empresas()
+            empresas_filtradas = df_emp_todas[
+                df_emp_todas["entorno"] == st.session_state.entorno
+            ]
+            if not empresas_filtradas.empty:
+                st.session_state.empresa_id = empresas_filtradas.iloc[0]["empresa_id"]
+            st.rerun()
 elif EMPRESA_URL and not st.session_state.empresa_id:
     # En modo móvil, si la URL trae ?empresa=CODIGO, se precarga.
     st.session_state.empresa_id = EMPRESA_URL
@@ -2239,6 +2263,8 @@ else:
         st.session_state.rol = None
         st.session_state.emp_login_ok = False
         st.session_state.emp_datos = None
+        st.session_state.dev_entorno_desbloqueado = False
+        st.session_state.entorno = "PROD"
         st.rerun()
 
 if opcion == "⏰ Marcar Asistencia":
