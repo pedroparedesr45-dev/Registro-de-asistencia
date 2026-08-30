@@ -748,6 +748,7 @@ def sincronizar_marcaciones_nube(supabase, empresa_id):
             )
             registros_nube = res.data or []
             if not registros_nube:
+                st.session_state["_ultima_sync_hubo_cambios"] = False
                 return df_local
 
             existentes = set()
@@ -792,6 +793,7 @@ def sincronizar_marcaciones_nube(supabase, empresa_id):
                 })
 
             if not filas_nuevas:
+                st.session_state["_ultima_sync_hubo_cambios"] = False
                 return df_local
 
             df_nuevas = pd.DataFrame(filas_nuevas)[COLUMNAS_ASISTENCIA]
@@ -801,6 +803,7 @@ def sincronizar_marcaciones_nube(supabase, empresa_id):
                 header=not existe_archivo,
                 index=False,
             )
+            st.session_state["_ultima_sync_hubo_cambios"] = True
             return pd.concat([df_local, df_nuevas], ignore_index=True)
     except Exception:
         return None  # si falla la sincronización, se lee el CSV local tal cual
@@ -2577,7 +2580,52 @@ elif opcion == "🔐 Panel de Gestión / Admin":
     else:
         from streamlit_autorefresh import st_autorefresh
 
-        st_autorefresh(interval=10_000, key="admin_autorefresh")
+        # --- Auto-refresh inteligente ---
+        # 1) Si la pestaña del navegador no está a la vista (el usuario
+        #    cambió a otra ventana/pestaña), se espacía mucho el refresco:
+        #    no tiene sentido seguir consultando Supabase si nadie está
+        #    mirando la pantalla.
+        # 2) Si la pestaña sí está visible pero llevan varios ciclos
+        #    seguidos sin ninguna marcación nueva, el intervalo se va
+        #    alargando poco a poco (10s → 20s → 40s, tope 60s) para no
+        #    machacar Supabase en horas muertas. En cuanto aparece algo
+        #    nuevo, vuelve de inmediato a 10s (para no hacer esperar al
+        #    admin justo cuando sí está pasando algo).
+        if "pestana_visible" not in st.session_state:
+            st.session_state.pestana_visible = True
+        if "admin_intervalo_autorefresh_ms" not in st.session_state:
+            st.session_state.admin_intervalo_autorefresh_ms = 10_000
+        if "admin_ciclos_sin_cambios" not in st.session_state:
+            st.session_state.admin_ciclos_sin_cambios = 0
+
+        _visible_detectado = streamlit_js_eval(
+            js_expressions="document.visibilityState === 'visible'",
+            key="PESTANA_VISIBLE",
+        )
+        if _visible_detectado is not None:
+            st.session_state.pestana_visible = bool(_visible_detectado)
+
+        hubo_cambios = st.session_state.pop(
+            "_ultima_sync_hubo_cambios", None
+        )
+        if hubo_cambios is True:
+            st.session_state.admin_ciclos_sin_cambios = 0
+            st.session_state.admin_intervalo_autorefresh_ms = 10_000
+        elif hubo_cambios is False:
+            st.session_state.admin_ciclos_sin_cambios += 1
+            if st.session_state.admin_ciclos_sin_cambios >= 3:
+                st.session_state.admin_intervalo_autorefresh_ms = min(
+                    st.session_state.admin_intervalo_autorefresh_ms * 2,
+                    60_000,
+                )
+                st.session_state.admin_ciclos_sin_cambios = 0
+
+        if st.session_state.pestana_visible:
+            intervalo_ms = st.session_state.admin_intervalo_autorefresh_ms
+        else:
+            intervalo_ms = 60_000  # pestaña en segundo plano: casi en pausa
+
+        st_autorefresh(interval=intervalo_ms, key="admin_autorefresh")
 
         st.title(
             f"⚙️ Control Administrativo - [{st.session_state.empresa_id}]"
