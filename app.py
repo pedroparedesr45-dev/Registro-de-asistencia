@@ -425,6 +425,47 @@ def es_mejora_activa(empresa_entorno):
     return st.session_state.get("mejoras_activadas_prod", False)
 
 
+# Fila especial dentro de "configuracion_sistema" que no representa a
+# ninguna empresa real: se usa solo para guardar el interruptor global
+# de "Mejoras en Producción" (afecta a TODAS las empresas en PROD).
+FLAG_GLOBAL_ID = "__SISTEMA_GLOBAL__"
+
+
+def cargar_mejoras_prod_global(supabase):
+    """Trae de Supabase si las 'Mejoras en Producción' están activas
+    globalmente y actualiza session_state. Antes esto solo vivía en
+    session_state: cada usuario/pestaña veía su propio estado y se
+    perdía al cerrar el navegador o al redesplegar la app."""
+    if not supabase:
+        return
+    try:
+        res = (
+            supabase.table("configuracion_sistema")
+            .select("mejoras_activadas_prod")
+            .eq("empresa_id", FLAG_GLOBAL_ID)
+            .limit(1)
+            .execute()
+        )
+        if res.data:
+            valor = res.data[0].get("mejoras_activadas_prod")
+            if valor is not None:
+                st.session_state.mejoras_activadas_prod = bool(valor)
+    except Exception:
+        pass  # si falla, se sigue usando lo que ya había en session_state
+
+
+def guardar_mejoras_prod_global(supabase, activo: bool):
+    """Guarda en Supabase el estado global de 'Mejoras en Producción', para
+    que sea el mismo para todas las empresas y dispositivos, y sobreviva
+    a los redespliegues."""
+    if not supabase:
+        raise RuntimeError("El cliente de Supabase no está configurado.")
+    supabase.table("configuracion_sistema").upsert(
+        {"empresa_id": FLAG_GLOBAL_ID, "mejoras_activadas_prod": activo},
+        on_conflict="empresa_id",
+    ).execute()
+
+
 def validar_integridad_desarrollo():
     if not os.path.exists(CSV_EMPRESAS):
         return False, "Falta archivo de empresas"
@@ -461,6 +502,15 @@ def modal_confirmar_despliegue():
     col1, col2 = st.columns(2)
     with col1:
         if st.button("🔴 Confirmar y Desplegar", use_container_width=True):
+            if supabase:
+                try:
+                    guardar_mejoras_prod_global(supabase, True)
+                except Exception as e:
+                    st.warning(
+                        "No se pudo guardar en la nube"
+                        f" ({e}). Quedó activo solo para esta sesión;"
+                        " otros usuarios/dispositivos no lo verán activo."
+                    )
             st.session_state.mejoras_activadas_prod = True
             st.success("¡Despliegue a Producción exitoso!")
             st.rerun()
@@ -948,6 +998,11 @@ df_empresas = cargar_empresas()
 df_sedes, df_empleados, df_asistencia = cargar_datos(
     st.session_state.empresa_id
 )
+
+# Sincroniza el interruptor global de "Mejoras en Producción" con lo que
+# haya guardado en Supabase, para que sea el mismo estado en todas las
+# empresas, dispositivos y usuarios (ver funciones cerca de es_mejora_activa).
+cargar_mejoras_prod_global(supabase)
 
 
 # ---------------------------------------------------------
