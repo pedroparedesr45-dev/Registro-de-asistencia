@@ -2289,27 +2289,23 @@ if opcion == "⏰ Marcar Asistencia":
         col_acc1, col_acc2 = st.columns(2)
         with col_acc1:
             # Selector desplegable de empresa (antes era un campo de texto
-            # libre). Se listan las empresas del entorno actual; si la URL
-            # precargó un código que no está en esa lista (enlace
-            # compartido apuntando a otro entorno/empresa todavía no
-            # visible aquí), se agrega igual como opción para no romper
-            # ese acceso directo.
+            # libre). Se filtra SOLO por el modo en el que esté el usuario:
+            # si no inició sesión como Developer (PIN 9999), solo ve las
+            # empresas de PRODUCCIÓN; si sí inició sesión como Developer,
+            # solo ve las de DESARROLLO/Sandbox. Aplica igual en celular y
+            # en PC — no depende del toggle abierto de entorno del sidebar.
+            _dev_autenticado = st.session_state.get("rol") == "master"
+            _entorno_login_empleado = "DEV" if _dev_autenticado else "PROD"
+
             df_e_disponibles_login = cargar_empresas()
             df_e_disponibles_login = df_e_disponibles_login[
-                df_e_disponibles_login["entorno"] == st.session_state.entorno
+                df_e_disponibles_login["entorno"] == _entorno_login_empleado
             ]
             opciones_empresa_login = (
                 list(df_e_disponibles_login["empresa_id"].astype(str).unique())
                 if not df_e_disponibles_login.empty
                 else []
             )
-            if (
-                st.session_state.empresa_id
-                and st.session_state.empresa_id not in opciones_empresa_login
-            ):
-                opciones_empresa_login = (
-                    [st.session_state.empresa_id] + opciones_empresa_login
-                )
 
             if opciones_empresa_login:
                 idx_empresa_login = (
