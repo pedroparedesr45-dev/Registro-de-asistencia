@@ -717,12 +717,23 @@ def sincronizar_marcaciones_nube(supabase, empresa_id):
     días que aún no estén en el CSV local, y las agrega. Se llama cada vez
     que se carga el panel; combinado con el auto-refresh del panel admin,
     funciona como una sincronización 'casi en tiempo real' entre
-    dispositivos (celulares que marcan y laptops que monitorean)."""
+    dispositivos (celulares que marcan y laptops que monitorean).
+
+    Devuelve el DataFrame resultante (con las filas nuevas ya incluidas si
+    las hubo) para que quien llama no tenga que releer el archivo del
+    disco otra vez. Si Supabase no está disponible o falla, devuelve None
+    y el que llama debe leer el CSV local por su cuenta.
+
+    Optimización: cuando hay filas nuevas, se agregan al final del archivo
+    (modo 'append') en vez de reescribir el CSV completo — con meses de
+    historial esto es mucho más rápido y mantiene el bloqueo del archivo
+    ocupado por menos tiempo."""
     if not supabase:
-        return
+        return None
     try:
         with bloqueo_csv(CSV_ASISTENCIA):
-            if os.path.exists(CSV_ASISTENCIA):
+            existe_archivo = os.path.exists(CSV_ASISTENCIA)
+            if existe_archivo:
                 df_local = pd.read_csv(CSV_ASISTENCIA)
             else:
                 df_local = pd.DataFrame(columns=COLUMNAS_ASISTENCIA)
@@ -737,7 +748,7 @@ def sincronizar_marcaciones_nube(supabase, empresa_id):
             )
             registros_nube = res.data or []
             if not registros_nube:
-                return
+                return df_local
 
             existentes = set()
             if not df_local.empty:
@@ -780,14 +791,19 @@ def sincronizar_marcaciones_nube(supabase, empresa_id):
                     "Foto": reg.get("foto_url", ""),
                 })
 
-            if filas_nuevas:
-                df_local = pd.concat(
-                    [df_local, pd.DataFrame(filas_nuevas)],
-                    ignore_index=True,
-                )
-                df_local.to_csv(CSV_ASISTENCIA, index=False)
+            if not filas_nuevas:
+                return df_local
+
+            df_nuevas = pd.DataFrame(filas_nuevas)[COLUMNAS_ASISTENCIA]
+            df_nuevas.to_csv(
+                CSV_ASISTENCIA,
+                mode="a" if existe_archivo else "w",
+                header=not existe_archivo,
+                index=False,
+            )
+            return pd.concat([df_local, df_nuevas], ignore_index=True)
     except Exception:
-        pass  # si falla la sincronización, se sigue mostrando lo que ya había local
+        return None  # si falla la sincronización, se lee el CSV local tal cual
 
 
 def enviar_backup_email(asunto, cuerpo, adjuntos):
@@ -1200,35 +1216,45 @@ def cargar_datos(empresa_id):
         with bloqueo_csv(CSV_EMPLEADOS):
             df_empleados.to_csv(CSV_EMPLEADOS, index=False)
 
-    sincronizar_marcaciones_nube(supabase, empresa_id)
+    df_asistencia_sync = sincronizar_marcaciones_nube(supabase, empresa_id)
 
-    if os.path.exists(CSV_ASISTENCIA):
+    if df_asistencia_sync is not None:
+        # La sincronización ya leyó (y si hizo falta, agregó) los datos;
+        # se reutiliza en memoria sin volver a tocar el disco.
+        df_asistencia = df_asistencia_sync
+        columnas_faltantes = False
+        if "empresa_id" not in df_asistencia.columns:
+            df_asistencia["empresa_id"] = empresa_id
+            columnas_faltantes = True
+        if "Hora Salida Oficial" not in df_asistencia.columns:
+            df_asistencia["Hora Salida Oficial"] = "17:00:00"
+            columnas_faltantes = True
+        if "Horas Extra (min)" not in df_asistencia.columns:
+            df_asistencia["Horas Extra (min)"] = 0
+            columnas_faltantes = True
+        if columnas_faltantes:
+            # Solo se reescribe el archivo si de verdad hubo que agregar
+            # una columna nueva (por ejemplo, tras una actualización de
+            # código) — no en cada carga de página normal.
+            with bloqueo_csv(CSV_ASISTENCIA):
+                df_asistencia.to_csv(CSV_ASISTENCIA, index=False)
+    elif os.path.exists(CSV_ASISTENCIA):
         with bloqueo_csv(CSV_ASISTENCIA):
             df_asistencia = pd.read_csv(CSV_ASISTENCIA)
+            columnas_faltantes = False
             if "empresa_id" not in df_asistencia.columns:
                 df_asistencia["empresa_id"] = empresa_id
+                columnas_faltantes = True
             if "Hora Salida Oficial" not in df_asistencia.columns:
                 df_asistencia["Hora Salida Oficial"] = "17:00:00"
+                columnas_faltantes = True
             if "Horas Extra (min)" not in df_asistencia.columns:
                 df_asistencia["Horas Extra (min)"] = 0
-            df_asistencia.to_csv(CSV_ASISTENCIA, index=False)
+                columnas_faltantes = True
+            if columnas_faltantes:
+                df_asistencia.to_csv(CSV_ASISTENCIA, index=False)
     else:
-        df_asistencia = pd.DataFrame(columns=[
-            "empresa_id",
-            "Fecha",
-            "Empleado",
-            "Tipo Marcación",
-            "Hora Registrada",
-            "Hora Entrada Oficial",
-            "Hora Salida Oficial",
-            "Estado",
-            "Minutos Tardanza",
-            "Horas Extra (min)",
-            "Sede Detectada",
-            "Distancia (m)",
-            "En Rango",
-            "Foto",
-        ])
+        df_asistencia = pd.DataFrame(columns=COLUMNAS_ASISTENCIA)
         with bloqueo_csv(CSV_ASISTENCIA):
             df_asistencia.to_csv(CSV_ASISTENCIA, index=False)
 
@@ -2490,16 +2516,16 @@ if opcion == "⏰ Marcar Asistencia":
                 }
 
                 with bloqueo_csv(CSV_ASISTENCIA):
-                    df_asistencia_full = (
-                        pd.read_csv(CSV_ASISTENCIA)
-                        if os.path.exists(CSV_ASISTENCIA)
-                        else pd.DataFrame()
+                    archivo_existia = os.path.exists(CSV_ASISTENCIA)
+                    df_fila_nueva = pd.DataFrame(
+                        [nueva_marcacion]
+                    )[COLUMNAS_ASISTENCIA]
+                    df_fila_nueva.to_csv(
+                        CSV_ASISTENCIA,
+                        mode="a" if archivo_existia else "w",
+                        header=not archivo_existia,
+                        index=False,
                     )
-                    df_asistencia_full = pd.concat(
-                        [df_asistencia_full, pd.DataFrame([nueva_marcacion])],
-                        ignore_index=True,
-                    )
-                    df_asistencia_full.to_csv(CSV_ASISTENCIA, index=False)
 
                 if sync_nube_ok:
                     st.success(
