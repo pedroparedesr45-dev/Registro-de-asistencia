@@ -519,7 +519,78 @@ def modal_confirmar_despliegue():
             st.rerun()
 
 
+def cargar_empresas_supabase(supabase):
+    """Trae la lista completa de empresas desde Supabase. Devuelve None si
+    Supabase no está disponible o falla la consulta (así quien llama sabe
+    que debe usar el CSV local como respaldo/modo offline)."""
+    if not supabase:
+        return None
+    try:
+        res = supabase.table("empresas").select("*").execute()
+        return res.data
+    except Exception:
+        return None
+
+
+def guardar_empresa_supabase(supabase, datos_empresa):
+    """Crea o actualiza (upsert) una empresa en Supabase."""
+    if not supabase:
+        raise RuntimeError("El cliente de Supabase no está configurado.")
+    datos = dict(datos_empresa)
+    datos["empresa_id"] = str(datos["empresa_id"])
+    supabase.table("empresas").upsert(
+        datos, on_conflict="empresa_id"
+    ).execute()
+
+
+def eliminar_empresa_supabase(supabase, empresa_id):
+    """Borra (DELETE real) una empresa de Supabase."""
+    if not supabase:
+        raise RuntimeError("El cliente de Supabase no está configurado.")
+    supabase.table("empresas").delete().eq(
+        "empresa_id", str(empresa_id)
+    ).execute()
+
+
 def cargar_empresas():
+    registros_empresas = cargar_empresas_supabase(supabase)
+    columnas_empresas = [
+        "empresa_id",
+        "razon_social",
+        "ruc",
+        "plan",
+        "estado",
+        "entorno",
+    ]
+
+    if registros_empresas is not None:
+        # Supabase respondió: es la fuente de verdad para la lista de
+        # empresas (sobrevive a reboots/redespliegues, a diferencia del
+        # CSV local que se borra en cada uno).
+        if registros_empresas:
+            df = pd.DataFrame(registros_empresas)
+        else:
+            df = pd.DataFrame(columns=columnas_empresas)
+
+        valores_por_defecto = {
+            "entorno": "PROD",
+            "estado": "ACTIVO",
+            "plan": "BASIC",
+            "ruc": "",
+            "razon_social": "",
+        }
+        for columna, valor_default in valores_por_defecto.items():
+            if columna not in df.columns:
+                df[columna] = valor_default
+            df[columna] = df[columna].fillna(valor_default)
+
+        # Copia local como caché/respaldo por si Supabase falla más tarde.
+        try:
+            df[columnas_empresas].to_csv(CSV_EMPRESAS, index=False)
+        except Exception:
+            pass
+        return df
+
     if os.path.exists(CSV_EMPRESAS):
         df = pd.read_csv(CSV_EMPRESAS)
         if "entorno" not in df.columns:
@@ -1624,15 +1695,32 @@ def render_modulo_empresas():
         with col_eb1:
             if is_edit_emp:
                 if st.button("💾 Guardar Empresa", use_container_width=True):
+                    datos_emp_upd = {
+                        "empresa_id": emp_sel_ed,
+                        "razon_social": ed_rz.strip().upper(),
+                        "ruc": ed_ruc.strip(),
+                        "plan": ed_plan,
+                        "entorno": ed_entorno,
+                    }
+                    if supabase:
+                        try:
+                            guardar_empresa_supabase(supabase, datos_emp_upd)
+                        except Exception as e:
+                            st.warning(
+                                "No se pudo guardar en la nube"
+                                f" ({e}). Se guardó solo local; se"
+                                " perderá en el próximo redespliegue."
+                            )
+
                     df_e_all = cargar_empresas()
                     idx_e = df_e_all[
                         df_e_all["empresa_id"] == emp_sel_ed
-                    ].index[0]
-                    df_e_all.at[idx_e, "razon_social"] = ed_rz.strip().upper()
-                    df_e_all.at[idx_e, "ruc"] = ed_ruc.strip()
-                    df_e_all.at[idx_e, "plan"] = ed_plan
-                    df_e_all.at[idx_e, "entorno"] = ed_entorno
-                    df_e_all.to_csv(CSV_EMPRESAS, index=False)
+                    ].index
+                    if len(idx_e) > 0:
+                        for campo, valor in datos_emp_upd.items():
+                            if campo != "empresa_id":
+                                df_e_all.at[idx_e[0], campo] = valor
+                        df_e_all.to_csv(CSV_EMPRESAS, index=False)
                     st.success("Datos de la empresa guardados.")
                     st.rerun()
             else:
@@ -1652,6 +1740,20 @@ def render_modulo_empresas():
                                 "estado": "ACTIVO",
                                 "entorno": ed_entorno,
                             }
+
+                            if supabase:
+                                try:
+                                    guardar_empresa_supabase(
+                                        supabase, new_e
+                                    )
+                                except Exception as e:
+                                    st.warning(
+                                        "No se pudo guardar en la nube"
+                                        f" ({e}). Se guardó solo local;"
+                                        " se perderá en el próximo"
+                                        " redespliegue."
+                                    )
+
                             df_e_all = pd.concat(
                                 [df_e_all, pd.DataFrame([new_e])],
                                 ignore_index=True,
@@ -1663,6 +1765,14 @@ def render_modulo_empresas():
         with col_eb2:
             if is_edit_emp:
                 if st.button("🗑️ Eliminar Empresa", use_container_width=True):
+                    if supabase:
+                        try:
+                            eliminar_empresa_supabase(supabase, emp_sel_ed)
+                        except Exception as e:
+                            st.warning(
+                                "No se pudo eliminar en la nube"
+                                f" ({e}). Se eliminó solo local."
+                            )
                     df_e_all = cargar_empresas()
                     df_e_all = df_e_all[df_e_all["empresa_id"] != emp_sel_ed]
                     df_e_all.to_csv(CSV_EMPRESAS, index=False)
