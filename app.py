@@ -644,6 +644,18 @@ def modal_confirmar_despliegue():
             st.rerun()
 
 
+def marcar_estado_modo_local(nombre_tabla: str, en_modo_local: bool):
+    """Registra en session_state si una tabla (sedes/empleados/empresas)
+    está operando en modo local (CSV) porque Supabase no respondió al
+    CARGAR. Alimenta el aviso visible que se muestra en el panel admin
+    (ver 'tablas_en_modo_local')."""
+    tablas = st.session_state.setdefault("tablas_en_modo_local", set())
+    if en_modo_local:
+        tablas.add(nombre_tabla)
+    else:
+        tablas.discard(nombre_tabla)
+
+
 def cargar_empresas_supabase(supabase):
     """Trae la lista completa de empresas desde Supabase. Devuelve None si
     Supabase no está disponible o falla la consulta (así quien llama sabe
@@ -739,8 +751,10 @@ def cargar_empresas():
                 df[columnas_empresas].to_csv(CSV_EMPRESAS, index=False)
         except Exception as _e_silenciosa:
             logger.warning(f"Error controlado (ignorado para el usuario): {_e_silenciosa}")
+        marcar_estado_modo_local("empresas", False)
         return df
 
+    marcar_estado_modo_local("empresas", True)
     if os.path.exists(CSV_EMPRESAS):
         with bloqueo_csv(CSV_EMPRESAS):
             df = pd.read_csv(CSV_EMPRESAS)
@@ -1152,7 +1166,9 @@ def cargar_datos(empresa_id):
                 df_mirror.to_csv(CSV_SEDES, index=False)
         except Exception as _e_silenciosa:
             logger.warning(f"Error controlado (ignorado para el usuario): {_e_silenciosa}")
+        marcar_estado_modo_local("sedes", False)
     elif os.path.exists(CSV_SEDES):
+        marcar_estado_modo_local("sedes", True)
         # Supabase no disponible ahora mismo: modo 100% local con lo
         # último que se guardó en el CSV.
         with bloqueo_csv(CSV_SEDES):
@@ -1165,6 +1181,7 @@ def cargar_datos(empresa_id):
                 df_sedes["hora_salida"] = "17:00:00"
             df_sedes.to_csv(CSV_SEDES, index=False)
     else:
+        marcar_estado_modo_local("sedes", True)
         # Ni Supabase ni CSV: primer arranque totalmente local, con sedes
         # de ejemplo para que la app no se caiga.
         df_sedes = pd.DataFrame({
@@ -1183,6 +1200,7 @@ def cargar_datos(empresa_id):
         })
         with bloqueo_csv(CSV_SEDES):
             df_sedes.to_csv(CSV_SEDES, index=False)
+        marcar_estado_modo_local("sedes", True)
 
     registros_empleados = cargar_empleados_supabase(supabase, empresa_id)
 
@@ -1252,7 +1270,9 @@ def cargar_datos(empresa_id):
                 df_mirror.to_csv(CSV_EMPLEADOS, index=False)
         except Exception as _e_silenciosa:
             logger.warning(f"Error controlado (ignorado para el usuario): {_e_silenciosa}")
+        marcar_estado_modo_local("empleados", False)
     elif os.path.exists(CSV_EMPLEADOS):
+        marcar_estado_modo_local("empleados", True)
         # Supabase no disponible ahora mismo: se sigue funcionando en modo
         # 100% local con lo último que se guardó en el CSV.
         with bloqueo_csv(CSV_EMPLEADOS):
@@ -1281,6 +1301,7 @@ def cargar_datos(empresa_id):
                 df_empleados["fecha_ingreso"] = "2026-01-01"
             df_empleados.to_csv(CSV_EMPLEADOS, index=False)
     else:
+        marcar_estado_modo_local("empleados", True)
         # Ni Supabase ni CSV: primer arranque totalmente local, con 2
         # trabajadores de ejemplo para que la app no se caiga.
         df_empleados = pd.DataFrame({
@@ -2267,9 +2288,45 @@ if opcion == "⏰ Marcar Asistencia":
         st.markdown("### 🔑 Iniciar Sesión de Empleado")
         col_acc1, col_acc2 = st.columns(2)
         with col_acc1:
-            empresa_input = st.text_input(
-                "Código de Empresa:", value=st.session_state.empresa_id
+            # Selector desplegable de empresa (antes era un campo de texto
+            # libre). Se listan las empresas del entorno actual; si la URL
+            # precargó un código que no está en esa lista (enlace
+            # compartido apuntando a otro entorno/empresa todavía no
+            # visible aquí), se agrega igual como opción para no romper
+            # ese acceso directo.
+            df_e_disponibles_login = cargar_empresas()
+            df_e_disponibles_login = df_e_disponibles_login[
+                df_e_disponibles_login["entorno"] == st.session_state.entorno
+            ]
+            opciones_empresa_login = (
+                list(df_e_disponibles_login["empresa_id"].astype(str).unique())
+                if not df_e_disponibles_login.empty
+                else []
             )
+            if (
+                st.session_state.empresa_id
+                and st.session_state.empresa_id not in opciones_empresa_login
+            ):
+                opciones_empresa_login = (
+                    [st.session_state.empresa_id] + opciones_empresa_login
+                )
+
+            if opciones_empresa_login:
+                idx_empresa_login = (
+                    opciones_empresa_login.index(st.session_state.empresa_id)
+                    if st.session_state.empresa_id in opciones_empresa_login
+                    else 0
+                )
+                empresa_input = st.selectbox(
+                    "Código de Empresa:",
+                    opciones_empresa_login,
+                    index=idx_empresa_login,
+                )
+            else:
+                empresa_input = None
+                st.info(
+                    "No hay empresas configuradas todavía en este entorno."
+                )
             dni_input = st.text_input("Ingrese su DNI:")
             pass_input = st.text_input(
                 "Ingrese su Contraseña:", type="password"
@@ -2723,6 +2780,26 @@ elif opcion == "🔐 Panel de Gestión / Admin":
             f"⚙️ Control Administrativo - [{st.session_state.empresa_id}]"
             f" ({st.session_state.entorno})"
         )
+
+        _tablas_locales = st.session_state.get("tablas_en_modo_local", set())
+        if _tablas_locales:
+            _nombres_visibles = {
+                "sedes": "Sedes",
+                "empleados": "Personal/Trabajadores",
+                "empresas": "Empresas",
+            }
+            _lista_legible = ", ".join(
+                _nombres_visibles.get(t, t) for t in sorted(_tablas_locales)
+            )
+            st.warning(
+                f"⚠️ Modo local activo para: **{_lista_legible}**. No se "
+                "pudo leer desde la Nube (Supabase) al cargar estos datos; "
+                "se está mostrando la última copia guardada en este "
+                "servidor. Los cambios recientes hechos desde otro "
+                "dispositivo podrían no reflejarse todavía, y si este "
+                "servidor se redespliega, los datos aún no sincronizados "
+                "se perderían."
+            )
 
         tabs = [
             "🏢 Dashboard General por Local",
