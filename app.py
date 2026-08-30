@@ -3892,10 +3892,31 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                             " nube."
                         )
 
+                        if not st.session_state.backup_email_ok:
+                            st.error(
+                                "🔒 La copia por correo de este respaldo"
+                                " falló (revisa el aviso más arriba). Por"
+                                " seguridad, no se puede limpiar la nube"
+                                " hasta tener al menos una copia"
+                                " garantizada fuera de Supabase. Genera el"
+                                " respaldo de nuevo, o revisa la"
+                                " configuración de correo (EMAIL_REMITENTE"
+                                " / EMAIL_APP_PASSWORD en Secrets)."
+                            )
+
+                        confirmar_descarga = st.checkbox(
+                            "Confirmo que ya descargué y guardé el .zip en"
+                            " un lugar seguro."
+                        )
+
                         if st.button(
                             "2️⃣ Ya descargué el respaldo — Limpiar la Nube",
                             use_container_width=True,
                             type="primary",
+                            disabled=not (
+                                st.session_state.backup_email_ok
+                                and confirmar_descarga
+                            ),
                         ):
                             try:
                                 ids = st.session_state.backup_ids_a_borrar
