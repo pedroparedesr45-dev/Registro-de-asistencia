@@ -858,10 +858,109 @@ def eliminar_empleado_supabase(supabase, empresa_id, dni):
     )
 
 
+# --- MIGRACIÓN: TABLA DE SEDES EN SUPABASE (mismo problema que empleados y
+# empresas: antes vivía solo en un CSV local que se borra en cada reboot/
+# redespliegue, perdiendo coordenadas GPS y horarios reales) ---
+def cargar_sedes_supabase(supabase, empresa_id):
+    """Trae las sedes de esta empresa desde Supabase. Devuelve None si
+    Supabase no está disponible o falla la consulta."""
+    if not supabase:
+        return None
+    try:
+        res = (
+            supabase.table("sedes")
+            .select("*")
+            .eq("empresa_id", str(empresa_id))
+            .execute()
+        )
+        return res.data
+    except Exception:
+        return None
+
+
+def guardar_sede_supabase(supabase, datos_sede):
+    """Crea o actualiza (upsert) una sede en Supabase. 'datos_sede' debe
+    incluir al menos empresa_id y nombre_sede."""
+    if not supabase:
+        raise RuntimeError("El cliente de Supabase no está configurado.")
+    datos = dict(datos_sede)
+    datos["empresa_id"] = str(datos["empresa_id"])
+    datos["nombre_sede"] = str(datos["nombre_sede"])
+    supabase.table("sedes").upsert(
+        datos, on_conflict="empresa_id,nombre_sede"
+    ).execute()
+
+
+def eliminar_sede_supabase(supabase, empresa_id, nombre_sede):
+    """Borra (DELETE real) una sede de Supabase."""
+    if not supabase:
+        raise RuntimeError("El cliente de Supabase no está configurado.")
+    (
+        supabase.table("sedes")
+        .delete()
+        .eq("empresa_id", str(empresa_id))
+        .eq("nombre_sede", str(nombre_sede))
+        .execute()
+    )
+
+
 def cargar_datos(empresa_id):
     cargar_empresas()
 
-    if os.path.exists(CSV_SEDES):
+    registros_sedes = cargar_sedes_supabase(supabase, empresa_id)
+    columnas_sedes = [
+        "empresa_id",
+        "nombre_sede",
+        "latitud",
+        "longitud",
+        "hora_entrada",
+        "hora_salida",
+        "rango_metros",
+    ]
+
+    if registros_sedes is not None:
+        # Supabase respondió: es la fuente de verdad (sobrevive a reboots
+        # y redespliegues).
+        if registros_sedes:
+            df_sedes = pd.DataFrame(registros_sedes)
+        else:
+            df_sedes = pd.DataFrame(columns=columnas_sedes)
+
+        if "empresa_id" not in df_sedes.columns:
+            df_sedes["empresa_id"] = empresa_id
+        if "rango_metros" not in df_sedes.columns:
+            df_sedes["rango_metros"] = 100.0
+        df_sedes["rango_metros"] = df_sedes["rango_metros"].fillna(100.0)
+        if "hora_salida" not in df_sedes.columns:
+            df_sedes["hora_salida"] = "17:00:00"
+        df_sedes["hora_salida"] = df_sedes["hora_salida"].fillna("17:00:00")
+        if "hora_entrada" not in df_sedes.columns:
+            df_sedes["hora_entrada"] = "08:00:00"
+        df_sedes["hora_entrada"] = df_sedes["hora_entrada"].fillna(
+            "08:00:00"
+        )
+
+        # Copia local (caché/respaldo offline), preservando sedes de OTRAS
+        # empresas que ya estuvieran en el CSV (panel Developer puede tener
+        # varias empresas cargadas al ir cambiando de entorno).
+        try:
+            if os.path.exists(CSV_SEDES):
+                df_csv_previo = pd.read_csv(CSV_SEDES)
+                df_csv_previo = df_csv_previo[
+                    df_csv_previo["empresa_id"].astype(str) != str(empresa_id)
+                ]
+                df_mirror = pd.concat(
+                    [df_csv_previo, df_sedes[columnas_sedes]],
+                    ignore_index=True,
+                )
+            else:
+                df_mirror = df_sedes[columnas_sedes]
+            df_mirror.to_csv(CSV_SEDES, index=False)
+        except Exception:
+            pass
+    elif os.path.exists(CSV_SEDES):
+        # Supabase no disponible ahora mismo: modo 100% local con lo
+        # último que se guardó en el CSV.
         df_sedes = pd.read_csv(CSV_SEDES)
         if "empresa_id" not in df_sedes.columns:
             df_sedes["empresa_id"] = empresa_id
@@ -871,6 +970,8 @@ def cargar_datos(empresa_id):
             df_sedes["hora_salida"] = "17:00:00"
         df_sedes.to_csv(CSV_SEDES, index=False)
     else:
+        # Ni Supabase ni CSV: primer arranque totalmente local, con sedes
+        # de ejemplo para que la app no se caiga.
         df_sedes = pd.DataFrame({
             "empresa_id": [empresa_id] * 4,
             "nombre_sede": [
@@ -1535,25 +1636,44 @@ def render_modulo_sedes(df_sedes):
         with col_btn_s1:
             if is_edit_s:
                 if st.button("💾 Actualizar Sede", use_container_width=True):
-                    df_sedes_full = pd.read_csv(CSV_SEDES)
-                    idx_s = df_sedes_full[
-                        (
-                            df_sedes_full["empresa_id"].astype(str)
-                            == str(st.session_state.empresa_id)
-                        )
-                        & (df_sedes_full["nombre_sede"] == sede_sel_ed)
-                    ].index[0]
-                    df_sedes_full.at[idx_s, "latitud"] = nueva_s_lat
-                    df_sedes_full.at[idx_s, "longitud"] = nueva_s_lon
-                    df_sedes_full.at[idx_s, "hora_entrada"] = (
-                        nueva_s_ent.strftime("%H:%M:%S")
-                    )
-                    df_sedes_full.at[idx_s, "hora_salida"] = (
-                        nueva_s_sal.strftime("%H:%M:%S")
-                    )
-                    df_sedes_full.at[idx_s, "rango_metros"] = nueva_s_rango
+                    datos_sede_upd = {
+                        "empresa_id": st.session_state.empresa_id,
+                        "nombre_sede": sede_sel_ed,
+                        "latitud": nueva_s_lat,
+                        "longitud": nueva_s_lon,
+                        "hora_entrada": nueva_s_ent.strftime("%H:%M:%S"),
+                        "hora_salida": nueva_s_sal.strftime("%H:%M:%S"),
+                        "rango_metros": nueva_s_rango,
+                    }
+                    if supabase:
+                        try:
+                            guardar_sede_supabase(supabase, datos_sede_upd)
+                        except Exception as e:
+                            st.warning(
+                                "No se pudo guardar en la nube"
+                                f" ({e}). Se guardó solo local; se"
+                                " perderá en el próximo redespliegue."
+                            )
 
-                    df_sedes_full.to_csv(CSV_SEDES, index=False)
+                    if os.path.exists(CSV_SEDES):
+                        df_sedes_full = pd.read_csv(CSV_SEDES)
+                        idx_s = df_sedes_full[
+                            (
+                                df_sedes_full["empresa_id"].astype(str)
+                                == str(st.session_state.empresa_id)
+                            )
+                            & (df_sedes_full["nombre_sede"] == sede_sel_ed)
+                        ].index
+                        if len(idx_s) > 0:
+                            for campo, valor in datos_sede_upd.items():
+                                if campo not in (
+                                    "empresa_id",
+                                    "nombre_sede",
+                                ):
+                                    df_sedes_full.at[
+                                        idx_s[0], campo
+                                    ] = valor
+                            df_sedes_full.to_csv(CSV_SEDES, index=False)
                     st.success("Sede actualizada correctamente.")
                     st.rerun()
             else:
@@ -1568,7 +1688,21 @@ def render_modulo_sedes(df_sedes):
                             "hora_salida": nueva_s_sal.strftime("%H:%M:%S"),
                             "rango_metros": nueva_s_rango,
                         }
-                        df_sedes_full = pd.read_csv(CSV_SEDES)
+
+                        if supabase:
+                            try:
+                                guardar_sede_supabase(supabase, nueva_fila)
+                            except Exception as e:
+                                st.warning(
+                                    "No se pudo guardar en la nube"
+                                    f" ({e}). Se guardó solo local; se"
+                                    " perderá en el próximo redespliegue."
+                                )
+
+                        if os.path.exists(CSV_SEDES):
+                            df_sedes_full = pd.read_csv(CSV_SEDES)
+                        else:
+                            df_sedes_full = pd.DataFrame()
                         df_sedes_full = pd.concat(
                             [df_sedes_full, pd.DataFrame([nueva_fila])],
                             ignore_index=True,
@@ -1580,17 +1714,33 @@ def render_modulo_sedes(df_sedes):
         with col_btn_s2:
             if is_edit_s:
                 if st.button("🗑️ Eliminar Sede", use_container_width=True):
-                    df_sedes_full = pd.read_csv(CSV_SEDES)
-                    df_sedes_full = df_sedes_full[
-                        ~(
-                            (
-                                df_sedes_full["empresa_id"].astype(str)
-                                == str(st.session_state.empresa_id)
+                    if supabase:
+                        try:
+                            eliminar_sede_supabase(
+                                supabase,
+                                st.session_state.empresa_id,
+                                sede_sel_ed,
                             )
-                            & (df_sedes_full["nombre_sede"] == sede_sel_ed)
-                        )
-                    ]
-                    df_sedes_full.to_csv(CSV_SEDES, index=False)
+                        except Exception as e:
+                            st.warning(
+                                "No se pudo eliminar en la nube"
+                                f" ({e}). Se eliminó solo local."
+                            )
+                    if os.path.exists(CSV_SEDES):
+                        df_sedes_full = pd.read_csv(CSV_SEDES)
+                        df_sedes_full = df_sedes_full[
+                            ~(
+                                (
+                                    df_sedes_full["empresa_id"].astype(str)
+                                    == str(st.session_state.empresa_id)
+                                )
+                                & (
+                                    df_sedes_full["nombre_sede"]
+                                    == sede_sel_ed
+                                )
+                            )
+                        ]
+                        df_sedes_full.to_csv(CSV_SEDES, index=False)
                     st.warning("Sede eliminada.")
                     st.rerun()
 
