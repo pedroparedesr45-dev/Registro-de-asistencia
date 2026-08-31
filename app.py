@@ -8,6 +8,7 @@ import io
 import json
 import logging
 import os
+import random
 import smtplib
 import zipfile
 from contextlib import contextmanager
@@ -267,6 +268,178 @@ if VISTA_TRABAJADOR_MOVIL:
         """,
         unsafe_allow_html=True,
     )
+
+# ---------------------------------------------------------
+# TEMA VISUAL GLOBAL — "futurista" (Parte 1 del rediseño)
+# ---------------------------------------------------------
+# Solo CSS/HTML: no cambia ningún widget, dato ni lógica de negocio.
+# Reutiliza los mismos st.button/st.text_input/st.selectbox/etc. de
+# siempre, solo les cambia la piel. El fondo animado va en una capa fija
+# detrás de todo (z-index -1) para no interferir con los clics.
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Space+Mono:wght@400;700&display=swap');
+
+    :root{
+        --bg-base:#0a0c11;
+        --bg-panel: rgba(19, 23, 32, 0.72);
+        --bg-panel-solid:#12151d;
+        --border: rgba(88, 166, 255, 0.18);
+        --border-soft:#232733;
+        --cyan:#58a6ff;
+        --violet:#a371f7;
+        --success:#3fb950;
+        --amber:#d29922;
+        --danger:#f85149;
+        --text:#e6edf3;
+        --text-muted:#8b949e;
+        --font-display:'Space Grotesk', system-ui, -apple-system, sans-serif;
+        --font-mono:'Space Mono', ui-monospace, SFMono-Regular, monospace;
+    }
+
+    /* ---------- FONDO FUTURISTA (capa fija detrás de todo) ---------- */
+    .fac-bg-layer{position:fixed; inset:0; z-index:-1; overflow:hidden; pointer-events:none;}
+    .fac-bg-base{
+        position:absolute; inset:0;
+        background:
+            radial-gradient(ellipse 120% 80% at 50% -10%, rgba(88,166,255,0.10), transparent 60%),
+            linear-gradient(180deg, #0a0c11 0%, #0d1017 55%, #0a0c11 100%);
+    }
+    .fac-orb{position:absolute; border-radius:50%; filter:blur(60px); opacity:0.35; will-change:transform;}
+    .fac-orb-cyan{width:420px; height:420px; left:-10%; top:8%; background:radial-gradient(circle, var(--cyan), transparent 70%); animation:fac-drift1 22s ease-in-out infinite alternate;}
+    .fac-orb-violet{width:380px; height:380px; right:-8%; top:35%; background:radial-gradient(circle, var(--violet), transparent 70%); animation:fac-drift2 26s ease-in-out infinite alternate;}
+    .fac-orb-cyan2{width:300px; height:300px; left:20%; bottom:-10%; background:radial-gradient(circle, var(--cyan), transparent 70%); opacity:0.2; animation:fac-drift3 30s ease-in-out infinite alternate;}
+    @keyframes fac-drift1{ from{transform:translate(0,0) scale(1);} to{transform:translate(60px,40px) scale(1.15);} }
+    @keyframes fac-drift2{ from{transform:translate(0,0) scale(1);} to{transform:translate(-50px,-30px) scale(1.1);} }
+    @keyframes fac-drift3{ from{transform:translate(0,0) scale(1);} to{transform:translate(40px,-50px) scale(1.2);} }
+    .fac-grid-overlay{
+        position:absolute; inset:-2px;
+        background-image:
+            linear-gradient(rgba(88,166,255,0.05) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(88,166,255,0.05) 1px, transparent 1px);
+        background-size:42px 42px;
+        mask-image:radial-gradient(ellipse 80% 60% at 50% 30%, black 40%, transparent 85%);
+        opacity:0.5;
+    }
+    .fac-scanline{
+        position:absolute; left:0; right:0; height:120px;
+        background:linear-gradient(180deg, transparent, rgba(88,166,255,0.06), transparent);
+        animation:fac-scan 7s linear infinite;
+    }
+    @keyframes fac-scan{ 0%{top:-120px;} 100%{top:100%;} }
+    @media (prefers-reduced-motion: reduce){ .fac-orb, .fac-scanline{ animation:none !important; } }
+
+    /* ---------- APLICAR EL TEMA A LOS WIDGETS NATIVOS DE STREAMLIT ---------- */
+    [data-testid="stAppViewContainer"], [data-testid="stHeader"]{ background:transparent !important; }
+    .stApp{ background:transparent !important; }
+    body, [data-testid="stAppViewContainer"] { color:var(--text); }
+
+    h1, h2, h3{ font-family:var(--font-display) !important; letter-spacing:0.01em; }
+    h1{
+        background:linear-gradient(90deg, #fff, var(--cyan) 120%);
+        -webkit-background-clip:text; background-clip:text;
+    }
+
+    /* Botones */
+    .stButton > button{
+        font-family:var(--font-display);
+        font-weight:600;
+        border-radius:14px !important;
+        border:1px solid var(--border-soft) !important;
+        background:var(--bg-panel-solid) !important;
+        color:var(--text) !important;
+        transition:transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    .stButton > button:hover{
+        border-color:var(--cyan) !important;
+        transform:translateY(-1px);
+    }
+    /* Botón "primario" (type="primary"): el llamado a la acción grande,
+       usado en Confirmar Marcación y otros botones clave del sistema. */
+    .stButton > button[kind="primary"]{
+        background:linear-gradient(135deg, #6fb4ff, var(--cyan) 45%, var(--violet) 130%) !important;
+        border:none !important;
+        color:#fff !important;
+        font-size:1.05em;
+        padding:0.7em 1.4em !important;
+        box-shadow:0 12px 34px rgba(88,166,255,0.35), 0 4px 14px rgba(0,0,0,0.4);
+    }
+    .stButton > button[kind="primary"]:hover{
+        transform:translateY(-2px);
+        box-shadow:0 16px 40px rgba(88,166,255,0.45), 0 4px 14px rgba(0,0,0,0.4);
+    }
+    .stButton > button[kind="primary"]:disabled{
+        background:var(--bg-panel-solid) !important;
+        color:var(--text-muted) !important;
+        box-shadow:none;
+    }
+
+    /* Tarjetas / contenedores con borde (st.container(border=True)) */
+    [data-testid="stVerticalBlockBorderWrapper"]{
+        background:var(--bg-panel) !important;
+        backdrop-filter:blur(18px);
+        -webkit-backdrop-filter:blur(18px);
+        border:1px solid var(--border) !important;
+        border-radius:22px !important;
+    }
+
+    /* Inputs */
+    [data-testid="stTextInput"] input, [data-testid="stNumberInput"] input,
+    [data-baseweb="select"] > div, [data-baseweb="input"]{
+        background:var(--bg-panel-solid) !important;
+        border-radius:12px !important;
+        border-color:var(--border-soft) !important;
+        color:var(--text) !important;
+    }
+
+    /* Alertas: se conserva el color semántico de Streamlit, solo se
+       redondea y se le da aire "glass" sin tocar el color de fondo. */
+    [data-testid="stAlert"]{
+        border-radius:14px !important;
+        backdrop-filter:blur(6px);
+    }
+
+    /* Expanders */
+    [data-testid="stExpander"]{
+        border-radius:16px !important;
+        border-color:var(--border-soft) !important;
+        background:var(--bg-panel-solid) !important;
+    }
+
+    /* Pestañas (tabs) del panel admin */
+    [data-baseweb="tab-list"]{ gap:4px; }
+    [data-baseweb="tab"]{
+        font-family:var(--font-display);
+        border-radius:10px 10px 0 0 !important;
+    }
+
+    /* Sidebar */
+    [data-testid="stSidebar"]{
+        background:rgba(13,16,23,0.9) !important;
+        border-right:1px solid var(--border-soft);
+    }
+
+    /* Métricas (st.metric) */
+    [data-testid="stMetric"]{
+        background:var(--bg-panel-solid);
+        border:1px solid var(--border-soft);
+        border-radius:14px;
+        padding:10px 14px;
+    }
+    </style>
+
+    <div class="fac-bg-layer">
+        <div class="fac-bg-base"></div>
+        <div class="fac-orb fac-orb-cyan"></div>
+        <div class="fac-orb fac-orb-violet"></div>
+        <div class="fac-orb fac-orb-cyan2"></div>
+        <div class="fac-grid-overlay"></div>
+        <div class="fac-scanline"></div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 st.markdown(
@@ -1419,6 +1592,21 @@ if not VISTA_TRABAJADOR_MOVIL:
             if not empresas_filtradas.empty:
                 st.session_state.empresa_id = empresas_filtradas.iloc[0]["empresa_id"]
             st.rerun()
+
+        # Personalización de la animación de "globos" al marcar asistencia
+        # (solo visible para el Developer con el entorno DEV desbloqueado).
+        with st.sidebar.expander("🎈 Animación de éxito (solo dev)"):
+            st.session_state.logo_globos_url = st.text_input(
+                "URL de imagen para los globos:",
+                value=st.session_state.get(
+                    "logo_globos_url", "/app/static/icon-192.png"
+                ),
+                help=(
+                    "Se usa en la animación que sube en globos al"
+                    " confirmar una marcación. Por defecto es el ícono de"
+                    " la app."
+                ),
+            )
 elif EMPRESA_URL and not st.session_state.empresa_id:
     # En modo móvil, si la URL trae ?empresa=CODIGO, se precarga.
     st.session_state.empresa_id = EMPRESA_URL
@@ -2268,9 +2456,36 @@ else:
         st.rerun()
 
 if opcion == "⏰ Marcar Asistencia":
-    st.title("⏰ Registro de Asistencia por GPS")
+    st.markdown(
+        f"""
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
+            <div style="display:flex; align-items:center; gap:10px;">
+                <div style="width:38px; height:38px; border-radius:11px;
+                    background:linear-gradient(135deg, var(--cyan), var(--violet));
+                    display:flex; align-items:center; justify-content:center;
+                    font-size:18px; box-shadow:0 0 22px rgba(88,166,255,0.35);">⏰</div>
+                <div style="font-family:var(--font-display); font-weight:700; font-size:17px;">
+                    Registro de Asistencia
+                    <small style="display:block; font-weight:400; font-size:11px; color:var(--text-muted);">
+                        Marcación por GPS + foto
+                    </small>
+                </div>
+            </div>
+            <div style="text-align:right;">
+                <div style="font-family:var(--font-mono); font-weight:700; font-size:22px;
+                    background:linear-gradient(90deg, #fff, var(--cyan) 120%);
+                    -webkit-background-clip:text; background-clip:text; color:transparent;">
+                    {ahora_peru().strftime('%H:%M')}
+                </div>
+                <div style="font-size:11.5px; color:var(--text-muted);">
+                    {ahora_peru().strftime('%d/%m/%Y')}
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     hoy = hoy_peru()
-    st.write(f"**Fecha actual:** {ahora_peru().strftime('%d/%m/%Y')}")
 
     if VISTA_TRABAJADOR_MOVIL:
         with st.expander("🔐 ¿Eres Admin, SuperAdmin o Developer?"):
@@ -2561,7 +2776,12 @@ if opcion == "⏰ Marcar Asistencia":
                     " sedes autorizadas."
                 )
 
-            if st.button("Confirmar Marcación", disabled=btn_disabled):
+            if st.button(
+                "✅ Confirmar Marcación",
+                disabled=btn_disabled,
+                type="primary",
+                use_container_width=True,
+            ):
                 foto_valida, msg_foto = validar_foto_captura(img_file)
                 if not foto_valida:
                     st.error(f"📷 {msg_foto}")
@@ -2711,6 +2931,51 @@ if opcion == "⏰ Marcar Asistencia":
                         f"¡Marcación de {tipo_marcacion} registrada "
                         "localmente!"
                     )
+
+                # --- Animación de "globos" con el logo (celebración) ---
+                _logo_globos = st.session_state.get(
+                    "logo_globos_url", "/app/static/icon-192.png"
+                )
+                _html_globos = (
+                    '<div style="position:fixed; inset:0; pointer-events:none;'
+                    ' z-index:9999; overflow:hidden;">'
+                )
+                for _i in range(10):
+                    _left = random.randint(2, 92)
+                    _delay = round(random.uniform(0, 1.4), 2)
+                    _drift = random.randint(-60, 60)
+                    _rot = random.randint(-14, 14)
+                    _dur = round(random.uniform(3.4, 5.2), 2)
+                    _html_globos += f"""
+                    <div style="position:absolute; bottom:-140px; left:{_left}%;
+                        width:52px; height:66px;
+                        animation:fac-float-up {_dur}s ease-in {_delay}s 1;
+                        --drift:{_drift}px; --rot:{_rot}deg;">
+                        <div style="width:100%; height:100%;
+                            border-radius:50% 50% 50% 50% / 58% 58% 42% 42%;
+                            background:linear-gradient(160deg, var(--cyan), var(--violet));
+                            box-shadow:0 6px 18px rgba(0,0,0,0.35);
+                            display:flex; align-items:center; justify-content:center;">
+                            <img src="{_logo_globos}" style="width:60%; height:60%;
+                                object-fit:contain; border-radius:50%;
+                                background:rgba(255,255,255,0.85);" />
+                        </div>
+                        <div style="position:absolute; left:50%; top:100%; width:1px;
+                            height:24px; background:rgba(255,255,255,0.35);
+                            transform:translateX(-50%);"></div>
+                    </div>
+                    """
+                _html_globos += """
+                </div>
+                <style>
+                @keyframes fac-float-up{
+                    0%{ transform:translateY(0) translateX(0) rotate(0deg); opacity:0; }
+                    8%{ opacity:1; }
+                    100%{ transform:translateY(-115vh) translateX(var(--drift, 30px)) rotate(var(--rot, 8deg)); opacity:0; }
+                }
+                </style>
+                """
+                st.markdown(_html_globos, unsafe_allow_html=True)
 
 elif opcion == "🔐 Panel de Gestión / Admin":
     if not st.session_state.autenticado:
