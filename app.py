@@ -27,6 +27,16 @@ from openpyxl.utils import get_column_letter
 from PIL import Image
 from streamlit_js_eval import get_geolocation, streamlit_js_eval
 
+# Detección de rostro (Nivel 1 de validación facial). Import protegido:
+# si el despliegue todavía no tiene opencv-python-headless en su
+# requirements.txt, la app sigue funcionando (no exige rostro, no se cae)
+# y se avisa al developer en el panel DEV para que lo agregue.
+try:
+    import cv2
+    CV2_DISPONIBLE = True
+except Exception:
+    CV2_DISPONIBLE = False
+
 # --- ZONA HORARIA (evita el desfase de horas del servidor, que corre en UTC) ---
 ZONA_HORARIA_APP = ZoneInfo("America/Lima")
 
@@ -126,6 +136,64 @@ def validar_foto_captura(img_file, max_mb=8):
         img_file.seek(0)
 
     return True, ""
+
+
+_CASCADA_ROSTROS = None
+
+
+def _cargar_cascada_rostros():
+    """Carga (una sola vez, cacheada en memoria) el detector de rostros
+    de OpenCV. No identifica a nadie: solo reconoce el patrón general de
+    una cara humana (ojos, nariz, contorno)."""
+    global _CASCADA_ROSTROS
+    if _CASCADA_ROSTROS is None and CV2_DISPONIBLE:
+        ruta_cascada = os.path.join(
+            cv2.data.haarcascades, "haarcascade_frontalface_default.xml"
+        )
+        _CASCADA_ROSTROS = cv2.CascadeClassifier(ruta_cascada)
+    return _CASCADA_ROSTROS
+
+
+def detectar_rostro_en_foto(img_file):
+    """NIVEL 1 de validación facial: confirma que la foto capturada
+    contiene al menos un rostro humano detectable. NO identifica de
+    quién es la cara (eso sería el Nivel 2, reconocimiento de
+    identidad, aparte). Devuelve (hay_rostro, mensaje_de_error)."""
+    if not CV2_DISPONIBLE:
+        # Si opencv no está instalado en este despliegue (falta en
+        # requirements.txt), no se bloquea al trabajador por un problema
+        # de configuración del developer; solo se deja pasar.
+        return True, ""
+    try:
+        img_file.seek(0)
+        imagen_pil = Image.open(img_file).convert("RGB")
+        imagen_np = np.array(imagen_pil)
+        imagen_gris = cv2.cvtColor(imagen_np, cv2.COLOR_RGB2GRAY)
+
+        cascada = _cargar_cascada_rostros()
+        rostros = cascada.detectMultiScale(
+            imagen_gris,
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(60, 60),
+        )
+
+        if len(rostros) == 0:
+            return False, (
+                "No se detectó un rostro en la foto. Asegúrate de que tu"
+                " cara se vea clara, de frente y con buena luz, y vuelve"
+                " a tomar la foto."
+            )
+        return True, ""
+    except Exception as _e_silenciosa:
+        logger.warning(
+            f"Error controlado (ignorado para el usuario): {_e_silenciosa}"
+        )
+        # Ante un fallo inesperado del detector (no ante "no hay
+        # rostro"), no se bloquea la marcación real del trabajador.
+        return True, ""
+    finally:
+        img_file.seek(0)
 
 
 def enviar_marcacion_supabase(empresa_id, dni, nombre, fecha, hora, tipo, foto_url="", gps=""):
@@ -2785,6 +2853,11 @@ if opcion == "⏰ Marcar Asistencia":
             img_file = st.camera_input(
                 "Toma una foto para confirmar tu identidad"
             )
+            st.caption(
+                "📸 La foto debe mostrar un rostro claro y de frente; si"
+                " no se detecta una cara, no se podrá confirmar la"
+                " marcación."
+            )
 
             btn_disabled = not en_rango or img_file is None or ya_marcado
 
@@ -2803,6 +2876,14 @@ if opcion == "⏰ Marcar Asistencia":
                 foto_valida, msg_foto = validar_foto_captura(img_file)
                 if not foto_valida:
                     st.error(f"📷 {msg_foto}")
+                    st.stop()
+
+                # NIVEL 1 de validación facial: exige que la foto tenga
+                # un rostro detectable (no identifica a la persona, solo
+                # confirma que hay una cara). Activo en PROD y DEV.
+                hay_rostro, msg_rostro = detectar_rostro_en_foto(img_file)
+                if not hay_rostro:
+                    st.error(f"🙂 {msg_rostro}")
                     st.stop()
 
                 now = ahora_peru().replace(tzinfo=None)
