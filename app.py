@@ -170,12 +170,27 @@ def detectar_rostro_en_foto(img_file):
         imagen_np = np.array(imagen_pil)
         imagen_gris = cv2.cvtColor(imagen_np, cv2.COLOR_RGB2GRAY)
 
+        # Filtro previo (más confiable que el detector de rostros para
+        # este caso puntual): si la imagen es casi uniforme —cámara
+        # tapada con el dedo, lente cubierto, foto a una superficie
+        # lisa— la desviación estándar de los tonos de gris es muy
+        # baja. El detector de rostros por sí solo puede dar falsos
+        # positivos sobre el ruido de una imagen oscura, así que esta
+        # verificación se hace ANTES y de forma independiente.
+        desviacion_tonos = float(imagen_gris.std())
+        if desviacion_tonos < 12:
+            return False, (
+                "La foto se ve vacía, muy oscura o con la cámara tapada."
+                " Destapa bien el lente, asegúrate de que se vea tu"
+                " rostro con buena luz, y vuelve a intentarlo."
+            )
+
         cascada = _cargar_cascada_rostros()
         rostros = cascada.detectMultiScale(
             imagen_gris,
             scaleFactor=1.1,
-            minNeighbors=5,
-            minSize=(60, 60),
+            minNeighbors=7,
+            minSize=(80, 80),
         )
 
         if len(rostros) == 0:
