@@ -171,14 +171,20 @@ def detectar_rostro_en_foto(img_file):
         imagen_gris = cv2.cvtColor(imagen_np, cv2.COLOR_RGB2GRAY)
 
         # Filtro previo (más confiable que el detector de rostros para
-        # este caso puntual): si la imagen es casi uniforme —cámara
-        # tapada con el dedo, lente cubierto, foto a una superficie
-        # lisa— la desviación estándar de los tonos de gris es muy
-        # baja. El detector de rostros por sí solo puede dar falsos
-        # positivos sobre el ruido de una imagen oscura, así que esta
-        # verificación se hace ANTES y de forma independiente.
+        # este caso puntual): una cámara tapada o sin luz da una imagen
+        # oscura en promedio —esto es más confiable que medir el
+        # "ruido" (desviación), porque cámaras de celular reales suben
+        # el ISO automáticamente en la oscuridad y generan bastante
+        # grano, lo que puede hacer parecer una imagen tapada como si
+        # tuviera variación normal. El brillo promedio no tiene ese
+        # problema: sigue siendo bajo aunque haya ruido.
+        brillo_promedio = float(imagen_gris.mean())
         desviacion_tonos = float(imagen_gris.std())
-        if desviacion_tonos < 12:
+        logger.warning(
+            f"Validación de rostro — brillo={brillo_promedio:.1f},"
+            f" desviación={desviacion_tonos:.1f}"
+        )
+        if brillo_promedio < 35 or desviacion_tonos < 12:
             return False, (
                 "La foto se ve vacía, muy oscura o con la cámara tapada."
                 " Destapa bien el lente, asegúrate de que se vea tu"
