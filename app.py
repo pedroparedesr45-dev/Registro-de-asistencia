@@ -1680,6 +1680,23 @@ if not VISTA_TRABAJADOR_MOVIL:
                     " la app."
                 ),
             )
+
+        # Indicador de estado del Nivel 1 (detección de rostro). Solo
+        # visible aquí, con el entorno DEV desbloqueado, para que el
+        # developer pueda diagnosticar si falta desplegar el
+        # requirements.txt actualizado sin tener que adivinar.
+        if CV2_DISPONIBLE:
+            st.sidebar.success(
+                "🙂 Nivel 1 (exigir rostro en la foto): ACTIVO",
+                icon="✅",
+            )
+        else:
+            st.sidebar.error(
+                "🙂 Nivel 1 (exigir rostro en la foto): INACTIVO — falta"
+                " 'opencv-python-headless' en requirements.txt de este"
+                " despliegue, o falta redesplegar tras agregarlo.",
+                icon="🚫",
+            )
 elif EMPRESA_URL and not st.session_state.empresa_id:
     # En modo móvil, si la URL trae ?empresa=CODIGO, se precarga.
     st.session_state.empresa_id = EMPRESA_URL
