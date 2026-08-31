@@ -2975,6 +2975,15 @@ if opcion == "⏰ Marcar Asistencia":
                 }
                 </style>
                 """
+                # FIX: Markdown trata cualquier línea con 4+ espacios de
+                # indentación como bloque de código literal (no la renderiza
+                # como HTML). Como este bloque se arma dentro de varios
+                # for/if anidados, cada línea queda indentada por Python.
+                # Quitamos la indentación de cada línea antes de enviarlo a
+                # st.markdown para que se interprete como HTML real.
+                _html_globos = "\n".join(
+                    _linea.strip() for _linea in _html_globos.splitlines()
+                )
                 st.markdown(_html_globos, unsafe_allow_html=True)
 
 elif opcion == "🔐 Panel de Gestión / Admin":
@@ -3120,50 +3129,54 @@ elif opcion == "🔐 Panel de Gestión / Admin":
 
         with tab_objs[0]:
             st.markdown("### 🏢 Resumen Consolidado por Sede (Principal)")
+            st.caption(
+                "📡 Datos casi en tiempo real · sincronizados con la Nube"
+            )
 
-            c_f1, c_f2, c_f3 = st.columns([2, 2, 2])
-            with c_f1:
-                mes_nombre_sel = st.selectbox(
-                    "Mes Evaluado:",
-                    list(MESES_NOMBRES.values()),
-                    index=ahora_peru().month - 1,
-                )
-                mes_sel = MESES_INVERSO[mes_nombre_sel]
-            with c_f2:
-                anio_sel = st.number_input(
-                    "Año Evaluado:",
-                    min_value=2024,
-                    max_value=2030,
-                    value=ahora_peru().year,
-                )
-            with c_f3:
-                st.write("")
-                st.write("")
-                if st.button(
-                    "📥 Descargar Reporte Excel Completo",
-                    use_container_width=True,
-                ):
-                    with st.spinner("📊 Generando el Excel completo..."):
-                        excel_bytes = generar_excel_completo(
-                            df_asistencia,
-                            df_empleados,
-                            mes_sel,
-                            anio_sel,
-                            st.session_state.clave_excel,
-                        )
-                    st.download_button(
-                        label="💾 Confirmar Descarga de Excel",
-                        data=excel_bytes,
-                        file_name=(
-                            f"Reporte_Asistencia_{st.session_state.empresa_id}_"
-                            f"{mes_nombre_sel}_{anio_sel}.xlsx"
-                        ),
-                        mime=(
-                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                        ),
+            with st.container(border=True):
+                c_f1, c_f2, c_f3 = st.columns([2, 2, 2])
+                with c_f1:
+                    mes_nombre_sel = st.selectbox(
+                        "Mes Evaluado:",
+                        list(MESES_NOMBRES.values()),
+                        index=ahora_peru().month - 1,
                     )
-
-            st.divider()
+                    mes_sel = MESES_INVERSO[mes_nombre_sel]
+                with c_f2:
+                    anio_sel = st.number_input(
+                        "Año Evaluado:",
+                        min_value=2024,
+                        max_value=2030,
+                        value=ahora_peru().year,
+                    )
+                with c_f3:
+                    st.write("")
+                    st.write("")
+                    if st.button(
+                        "📥 Descargar Reporte Excel Completo",
+                        use_container_width=True,
+                        type="primary",
+                    ):
+                        with st.spinner("📊 Generando el Excel completo..."):
+                            excel_bytes = generar_excel_completo(
+                                df_asistencia,
+                                df_empleados,
+                                mes_sel,
+                                anio_sel,
+                                st.session_state.clave_excel,
+                            )
+                        st.download_button(
+                            label="💾 Confirmar Descarga de Excel",
+                            data=excel_bytes,
+                            file_name=(
+                                f"Reporte_Asistencia_{st.session_state.empresa_id}_"
+                                f"{mes_nombre_sel}_{anio_sel}.xlsx"
+                            ),
+                            mime=(
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            ),
+                            use_container_width=True,
+                        )
 
             sedes_unicas = (
                 list(df_sedes["nombre_sede"].unique())
@@ -3173,114 +3186,140 @@ elif opcion == "🔐 Panel de Gestión / Admin":
             prefix_filtro = f"{anio_sel}-{mes_sel:02d}"
             num_dias_mes_gen = calendar.monthrange(anio_sel, mes_sel)[1]
 
+            # --- NUEVO (solo visual): tarjeta de resumen global, todas las
+            # sedes juntas, antes del detalle por local. No reemplaza ni
+            # modifica ninguno de los cálculos existentes por sede. ---
+            df_mes_general = df_asistencia[
+                df_asistencia["Fecha"].astype(str).str.startswith(prefix_filtro)
+            ]
+            with st.container(border=True):
+                st.markdown("##### 🌐 Resumen General — Todas las Sedes")
+                gg1, gg2, gg3, gg4 = st.columns(4)
+                gg1.metric("Personal Total", f"{len(df_empleados)} emps")
+                gg2.metric(
+                    "Puntualidades del Mes",
+                    f"{df_mes_general[df_mes_general['Estado'] == 'Puntual']['Fecha'].nunique() if not df_mes_general.empty else 0} días",
+                )
+                gg3.metric(
+                    "Tardanzas del Mes",
+                    f"{df_mes_general[df_mes_general['Estado'] == 'Tardanza']['Fecha'].nunique() if not df_mes_general.empty else 0} días",
+                )
+                gg4.metric(
+                    "Minutos Extras del Mes",
+                    f"{int(df_mes_general['Horas Extra (min)'].sum()) if not df_mes_general.empty else 0} min",
+                )
+
+            st.divider()
+
             for sede in sedes_unicas:
-                st.markdown(f"#### 📍 Local Principal: **{sede}**")
-                emps_sede = df_empleados[
-                    df_empleados["sede_principal"] == sede
-                ]
+                with st.container(border=True):
+                    st.markdown(f"#### 📍 Local Principal: **{sede}**")
+                    emps_sede = df_empleados[
+                        df_empleados["sede_principal"] == sede
+                    ]
 
-                if emps_sede.empty:
-                    st.caption(
-                        "No hay personal asignado a esta sede como principal."
-                    )
-                else:
-                    k1, k2, k3, k4 = st.columns(4)
-                    tot_p, tot_t, tot_min_t, tot_min_e = 0, 0, 0, 0
-
-                    for _, emp_row in emps_sede.iterrows():
-                        df_emp_a = df_asistencia[
-                            (df_asistencia["Empleado"] == emp_row["nombre"])
-                            & (
-                                df_asistencia["Fecha"]
-                                .astype(str)
-                                .str.startswith(prefix_filtro)
-                            )
-                        ]
-                        if not df_emp_a.empty:
-                            tot_p += df_emp_a[df_emp_a["Estado"] == "Puntual"][
-                                "Fecha"
-                            ].nunique()
-                            tot_t += df_emp_a[df_emp_a["Estado"] == "Tardanza"][
-                                "Fecha"
-                            ].nunique()
-                            tot_min_t += df_emp_a["Minutos Tardanza"].sum()
-                            tot_min_e += df_emp_a["Horas Extra (min)"].sum()
-
-                    max_dias_posibles = len(emps_sede) * num_dias_mes_gen
-
-                    hrs_dec_sede = round(tot_min_t / 60.0, 1)
-                    fmt_hm_sede = min_a_formato_horas(tot_min_t)
-
-                    k1.metric("Personal Afiliado", f"{len(emps_sede)} emps")
-                    k2.metric(
-                        "Puntualidades Totales",
-                        f"{tot_p} días",
-                        delta=f"{tot_p} de {max_dias_posibles} días-persona",
-                    )
-                    
-                    if es_mejora_activa(st.session_state.entorno):
-                        k3.metric(
-                            label="Horas Tardanza Sede",
-                            value=f"{hrs_dec_sede} hrs",
-                            delta=f"({fmt_hm_sede})",
-                            delta_color="off"
+                    if emps_sede.empty:
+                        st.caption(
+                            "No hay personal asignado a esta sede como principal."
                         )
                     else:
-                        k3.metric("Horas Tardanza Sede", f"{round(tot_min_t / 60.0, 2)} hrs")
+                        k1, k2, k3, k4 = st.columns(4)
+                        tot_p, tot_t, tot_min_t, tot_min_e = 0, 0, 0, 0
 
-                    k4.metric("Minutos Extras Totales", f"{tot_min_e} min")
+                        for _, emp_row in emps_sede.iterrows():
+                            df_emp_a = df_asistencia[
+                                (df_asistencia["Empleado"] == emp_row["nombre"])
+                                & (
+                                    df_asistencia["Fecha"]
+                                    .astype(str)
+                                    .str.startswith(prefix_filtro)
+                                )
+                            ]
+                            if not df_emp_a.empty:
+                                tot_p += df_emp_a[df_emp_a["Estado"] == "Puntual"][
+                                    "Fecha"
+                                ].nunique()
+                                tot_t += df_emp_a[df_emp_a["Estado"] == "Tardanza"][
+                                    "Fecha"
+                                ].nunique()
+                                tot_min_t += df_emp_a["Minutos Tardanza"].sum()
+                                tot_min_e += df_emp_a["Horas Extra (min)"].sum()
 
-                    st.markdown("**Personal de la Sede:**")
-                    df_resumen_local = []
-                    for _, emp_row in emps_sede.iterrows():
-                        df_emp_a = df_asistencia[
-                            (df_asistencia["Empleado"] == emp_row["nombre"])
-                            & (
-                                df_asistencia["Fecha"]
-                                .astype(str)
-                                .str.startswith(prefix_filtro)
+                        max_dias_posibles = len(emps_sede) * num_dias_mes_gen
+
+                        hrs_dec_sede = round(tot_min_t / 60.0, 1)
+                        fmt_hm_sede = min_a_formato_horas(tot_min_t)
+
+                        k1.metric("Personal Afiliado", f"{len(emps_sede)} emps")
+                        k2.metric(
+                            "Puntualidades Totales",
+                            f"{tot_p} días",
+                            delta=f"{tot_p} de {max_dias_posibles} días-persona",
+                        )
+                    
+                        if es_mejora_activa(st.session_state.entorno):
+                            k3.metric(
+                                label="Horas Tardanza Sede",
+                                value=f"{hrs_dec_sede} hrs",
+                                delta=f"({fmt_hm_sede})",
+                                delta_color="off"
                             )
-                        ]
-                        p_cnt = (
-                            df_emp_a[df_emp_a["Estado"] == "Puntual"][
-                                "Fecha"
-                            ].nunique()
-                            if not df_emp_a.empty
-                            else 0
-                        )
-                        t_cnt = (
-                            df_emp_a[df_emp_a["Estado"] == "Tardanza"][
-                                "Fecha"
-                            ].nunique()
-                            if not df_emp_a.empty
-                            else 0
-                        )
-                        m_sum = (
-                            df_emp_a["Minutos Tardanza"].sum()
-                            if not df_emp_a.empty
-                            else 0
-                        )
-                        e_sum = (
-                            df_emp_a["Horas Extra (min)"].sum()
-                            if not df_emp_a.empty
-                            else 0
-                        )
+                        else:
+                            k3.metric("Horas Tardanza Sede", f"{round(tot_min_t / 60.0, 2)} hrs")
 
-                        df_resumen_local.append({
-                            "DNI": emp_row["dni"],
-                            "Nombre": emp_row["nombre"],
-                            "Cargo": emp_row["cargo"],
-                            "Días Puntuales": f"{p_cnt} / {num_dias_mes_gen}",
-                            "Tardanzas": t_cnt,
-                            "Horas Tardanza": round(m_sum / 60.0, 2),
-                            "Min. Extras": e_sum,
-                        })
-                    st.dataframe(
-                        pd.DataFrame(df_resumen_local),
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-                st.divider()
+                        k4.metric("Minutos Extras Totales", f"{tot_min_e} min")
+
+                        st.markdown("**Personal de la Sede:**")
+                        df_resumen_local = []
+                        for _, emp_row in emps_sede.iterrows():
+                            df_emp_a = df_asistencia[
+                                (df_asistencia["Empleado"] == emp_row["nombre"])
+                                & (
+                                    df_asistencia["Fecha"]
+                                    .astype(str)
+                                    .str.startswith(prefix_filtro)
+                                )
+                            ]
+                            p_cnt = (
+                                df_emp_a[df_emp_a["Estado"] == "Puntual"][
+                                    "Fecha"
+                                ].nunique()
+                                if not df_emp_a.empty
+                                else 0
+                            )
+                            t_cnt = (
+                                df_emp_a[df_emp_a["Estado"] == "Tardanza"][
+                                    "Fecha"
+                                ].nunique()
+                                if not df_emp_a.empty
+                                else 0
+                            )
+                            m_sum = (
+                                df_emp_a["Minutos Tardanza"].sum()
+                                if not df_emp_a.empty
+                                else 0
+                            )
+                            e_sum = (
+                                df_emp_a["Horas Extra (min)"].sum()
+                                if not df_emp_a.empty
+                                else 0
+                            )
+
+                            df_resumen_local.append({
+                                "DNI": emp_row["dni"],
+                                "Nombre": emp_row["nombre"],
+                                "Cargo": emp_row["cargo"],
+                                "Días Puntuales": f"{p_cnt} / {num_dias_mes_gen}",
+                                "Tardanzas": t_cnt,
+                                "Horas Tardanza": round(m_sum / 60.0, 2),
+                                "Min. Extras": e_sum,
+                            })
+                        st.dataframe(
+                            pd.DataFrame(df_resumen_local),
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+                st.write("")
 
         with tab_objs[1]:
             st.markdown("### 👤 Reporte e Inspección Detallada por Trabajador")
