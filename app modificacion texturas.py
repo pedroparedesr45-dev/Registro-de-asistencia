@@ -2070,117 +2070,79 @@ def generar_excel_completo(
 def render_modulo_sedes(df_sedes):
     col_s1, col_s2 = st.columns([2, 1.2])
     with col_s1:
-        st.dataframe(df_sedes, use_container_width=True, hide_index=True)
+        with st.container(border=True):
+            st.markdown("#### 📍 Sedes Registradas")
+            st.dataframe(df_sedes, use_container_width=True, hide_index=True)
 
     with col_s2:
-        st.markdown("#### 📝 Crear / Editar Sede")
+        with st.container(border=True):
+            st.markdown("#### 📝 Crear / Editar Sede")
 
-        opciones_sedes = ["-- Crear Nueva Sede --"] + list(
-            df_sedes["nombre_sede"].unique()
-        )
-        sede_sel_ed = st.selectbox(
-            "Seleccionar Sede para Editar:", opciones_sedes
-        )
+            opciones_sedes = ["-- Crear Nueva Sede --"] + list(
+                df_sedes["nombre_sede"].unique()
+            )
+            sede_sel_ed = st.selectbox(
+                "Seleccionar Sede para Editar:", opciones_sedes
+            )
 
-        is_edit_s = sede_sel_ed != "-- Crear Nueva Sede --"
+            is_edit_s = sede_sel_ed != "-- Crear Nueva Sede --"
 
-        if is_edit_s:
-            datos_s = df_sedes[df_sedes["nombre_sede"] == sede_sel_ed].iloc[0]
-            val_s_nombre = str(datos_s["nombre_sede"])
-            val_s_lat = float(datos_s["latitud"])
-            val_s_lon = float(datos_s["longitud"])
-            val_s_ent = datetime.strptime(
-                str(datos_s["hora_entrada"]), "%H:%M:%S"
-            ).time()
-            val_s_sal = datetime.strptime(
-                str(datos_s["hora_salida"]), "%H:%M:%S"
-            ).time()
-            val_s_rango = float(datos_s.get("rango_metros", 100.0))
-        else:
-            val_s_nombre = ""
-            val_s_lat = -8.098100
-            val_s_lon = -79.044800
-            val_s_ent = time(8, 0)
-            val_s_sal = time(17, 0)
-            val_s_rango = 100.0
-
-        nueva_s_nombre = st.text_input(
-            "Nombre de Sede:",
-            value=val_s_nombre,
-            disabled=is_edit_s,
-        )
-        nueva_s_lat = st.number_input(
-            "Latitud:", format="%.6f", value=val_s_lat
-        )
-        nueva_s_lon = st.number_input(
-            "Longitud:", format="%.6f", value=val_s_lon
-        )
-        nueva_s_ent = st.time_input("Hora Entrada:", value=val_s_ent)
-        nueva_s_sal = st.time_input("Hora Salida:", value=val_s_sal)
-        nueva_s_rango = st.number_input("Radio Máximo (m):", value=val_s_rango)
-
-        col_btn_s1, col_btn_s2 = st.columns(2)
-
-        with col_btn_s1:
             if is_edit_s:
-                if st.button("💾 Actualizar Sede", use_container_width=True):
-                    datos_sede_upd = {
-                        "empresa_id": st.session_state.empresa_id,
-                        "nombre_sede": sede_sel_ed,
-                        "latitud": nueva_s_lat,
-                        "longitud": nueva_s_lon,
-                        "hora_entrada": nueva_s_ent.strftime("%H:%M:%S"),
-                        "hora_salida": nueva_s_sal.strftime("%H:%M:%S"),
-                        "rango_metros": nueva_s_rango,
-                    }
-                    if supabase:
-                        try:
-                            guardar_sede_supabase(supabase, datos_sede_upd)
-                        except Exception as e:
-                            st.warning(
-                                "No se pudo guardar en la nube"
-                                f" ({e}). Se guardó solo local; se"
-                                " perderá en el próximo redespliegue."
-                            )
-
-                    if os.path.exists(CSV_SEDES):
-                        with bloqueo_csv(CSV_SEDES):
-                            df_sedes_full = pd.read_csv(CSV_SEDES)
-                            idx_s = df_sedes_full[
-                                (
-                                    df_sedes_full["empresa_id"].astype(str)
-                                    == str(st.session_state.empresa_id)
-                                )
-                                & (df_sedes_full["nombre_sede"] == sede_sel_ed)
-                            ].index
-                            if len(idx_s) > 0:
-                                for campo, valor in datos_sede_upd.items():
-                                    if campo not in (
-                                        "empresa_id",
-                                        "nombre_sede",
-                                    ):
-                                        df_sedes_full.at[
-                                            idx_s[0], campo
-                                        ] = valor
-                                df_sedes_full.to_csv(CSV_SEDES, index=False)
-                    st.success("Sede actualizada correctamente.")
-                    st.rerun()
+                datos_s = df_sedes[df_sedes["nombre_sede"] == sede_sel_ed].iloc[0]
+                val_s_nombre = str(datos_s["nombre_sede"])
+                val_s_lat = float(datos_s["latitud"])
+                val_s_lon = float(datos_s["longitud"])
+                val_s_ent = datetime.strptime(
+                    str(datos_s["hora_entrada"]), "%H:%M:%S"
+                ).time()
+                val_s_sal = datetime.strptime(
+                    str(datos_s["hora_salida"]), "%H:%M:%S"
+                ).time()
+                val_s_rango = float(datos_s.get("rango_metros", 100.0))
             else:
-                if st.button("➕ Crear Sede", use_container_width=True):
-                    if nueva_s_nombre:
-                        nueva_fila = {
+                val_s_nombre = ""
+                val_s_lat = -8.098100
+                val_s_lon = -79.044800
+                val_s_ent = time(8, 0)
+                val_s_sal = time(17, 0)
+                val_s_rango = 100.0
+
+            nueva_s_nombre = st.text_input(
+                "Nombre de Sede:",
+                value=val_s_nombre,
+                disabled=is_edit_s,
+            )
+            nueva_s_lat = st.number_input(
+                "Latitud:", format="%.6f", value=val_s_lat
+            )
+            nueva_s_lon = st.number_input(
+                "Longitud:", format="%.6f", value=val_s_lon
+            )
+            nueva_s_ent = st.time_input("Hora Entrada:", value=val_s_ent)
+            nueva_s_sal = st.time_input("Hora Salida:", value=val_s_sal)
+            nueva_s_rango = st.number_input("Radio Máximo (m):", value=val_s_rango)
+
+            col_btn_s1, col_btn_s2 = st.columns(2)
+
+            with col_btn_s1:
+                if is_edit_s:
+                    if st.button(
+                        "💾 Actualizar Sede",
+                        use_container_width=True,
+                        type="primary",
+                    ):
+                        datos_sede_upd = {
                             "empresa_id": st.session_state.empresa_id,
-                            "nombre_sede": nueva_s_nombre.strip().upper(),
+                            "nombre_sede": sede_sel_ed,
                             "latitud": nueva_s_lat,
                             "longitud": nueva_s_lon,
                             "hora_entrada": nueva_s_ent.strftime("%H:%M:%S"),
                             "hora_salida": nueva_s_sal.strftime("%H:%M:%S"),
                             "rango_metros": nueva_s_rango,
                         }
-
                         if supabase:
                             try:
-                                guardar_sede_supabase(supabase, nueva_fila)
+                                guardar_sede_supabase(supabase, datos_sede_upd)
                             except Exception as e:
                                 st.warning(
                                     "No se pudo guardar en la nube"
@@ -2191,50 +2153,99 @@ def render_modulo_sedes(df_sedes):
                         if os.path.exists(CSV_SEDES):
                             with bloqueo_csv(CSV_SEDES):
                                 df_sedes_full = pd.read_csv(CSV_SEDES)
-                                df_sedes_full = pd.concat(
-                                    [df_sedes_full, pd.DataFrame([nueva_fila])],
-                                    ignore_index=True,
-                                )
-                                df_sedes_full.to_csv(CSV_SEDES, index=False)
-                        else:
-                            df_sedes_full = pd.DataFrame([nueva_fila])
-                            df_sedes_full.to_csv(CSV_SEDES, index=False)
-                        st.success(f"Sede {nueva_s_nombre} creada con éxito.")
-                        st.rerun()
-
-        with col_btn_s2:
-            if is_edit_s:
-                if st.button("🗑️ Eliminar Sede", use_container_width=True):
-                    if supabase:
-                        try:
-                            eliminar_sede_supabase(
-                                supabase,
-                                st.session_state.empresa_id,
-                                sede_sel_ed,
-                            )
-                        except Exception as e:
-                            st.warning(
-                                "No se pudo eliminar en la nube"
-                                f" ({e}). Se eliminó solo local."
-                            )
-                    if os.path.exists(CSV_SEDES):
-                        with bloqueo_csv(CSV_SEDES):
-                            df_sedes_full = pd.read_csv(CSV_SEDES)
-                            df_sedes_full = df_sedes_full[
-                                ~(
+                                idx_s = df_sedes_full[
                                     (
                                         df_sedes_full["empresa_id"].astype(str)
                                         == str(st.session_state.empresa_id)
                                     )
-                                    & (
-                                        df_sedes_full["nombre_sede"]
-                                        == sede_sel_ed
+                                    & (df_sedes_full["nombre_sede"] == sede_sel_ed)
+                                ].index
+                                if len(idx_s) > 0:
+                                    for campo, valor in datos_sede_upd.items():
+                                        if campo not in (
+                                            "empresa_id",
+                                            "nombre_sede",
+                                        ):
+                                            df_sedes_full.at[
+                                                idx_s[0], campo
+                                            ] = valor
+                                    df_sedes_full.to_csv(CSV_SEDES, index=False)
+                        st.success("Sede actualizada correctamente.")
+                        st.rerun()
+                else:
+                    if st.button(
+                        "➕ Crear Sede",
+                        use_container_width=True,
+                        type="primary",
+                    ):
+                        if nueva_s_nombre:
+                            nueva_fila = {
+                                "empresa_id": st.session_state.empresa_id,
+                                "nombre_sede": nueva_s_nombre.strip().upper(),
+                                "latitud": nueva_s_lat,
+                                "longitud": nueva_s_lon,
+                                "hora_entrada": nueva_s_ent.strftime("%H:%M:%S"),
+                                "hora_salida": nueva_s_sal.strftime("%H:%M:%S"),
+                                "rango_metros": nueva_s_rango,
+                            }
+
+                            if supabase:
+                                try:
+                                    guardar_sede_supabase(supabase, nueva_fila)
+                                except Exception as e:
+                                    st.warning(
+                                        "No se pudo guardar en la nube"
+                                        f" ({e}). Se guardó solo local; se"
+                                        " perderá en el próximo redespliegue."
                                     )
+
+                            if os.path.exists(CSV_SEDES):
+                                with bloqueo_csv(CSV_SEDES):
+                                    df_sedes_full = pd.read_csv(CSV_SEDES)
+                                    df_sedes_full = pd.concat(
+                                        [df_sedes_full, pd.DataFrame([nueva_fila])],
+                                        ignore_index=True,
+                                    )
+                                    df_sedes_full.to_csv(CSV_SEDES, index=False)
+                            else:
+                                df_sedes_full = pd.DataFrame([nueva_fila])
+                                df_sedes_full.to_csv(CSV_SEDES, index=False)
+                            st.success(f"Sede {nueva_s_nombre} creada con éxito.")
+                            st.rerun()
+
+            with col_btn_s2:
+                if is_edit_s:
+                    if st.button("🗑️ Eliminar Sede", use_container_width=True):
+                        if supabase:
+                            try:
+                                eliminar_sede_supabase(
+                                    supabase,
+                                    st.session_state.empresa_id,
+                                    sede_sel_ed,
                                 )
-                            ]
-                            df_sedes_full.to_csv(CSV_SEDES, index=False)
-                    st.warning("Sede eliminada.")
-                    st.rerun()
+                            except Exception as e:
+                                st.warning(
+                                    "No se pudo eliminar en la nube"
+                                    f" ({e}). Se eliminó solo local."
+                                )
+                        if os.path.exists(CSV_SEDES):
+                            with bloqueo_csv(CSV_SEDES):
+                                df_sedes_full = pd.read_csv(CSV_SEDES)
+                                df_sedes_full = df_sedes_full[
+                                    ~(
+                                        (
+                                            df_sedes_full["empresa_id"].astype(str)
+                                            == str(st.session_state.empresa_id)
+                                        )
+                                        & (
+                                            df_sedes_full["nombre_sede"]
+                                            == sede_sel_ed
+                                        )
+                                    )
+                                ]
+                                df_sedes_full.to_csv(CSV_SEDES, index=False)
+                        st.warning("Sede eliminada.")
+                        st.rerun()
 
 
 def render_modulo_empresas():
@@ -2245,184 +2256,186 @@ def render_modulo_empresas():
     df_emp_list = cargar_empresas()
 
     with c_dev1:
-        st.markdown("##### 📋 Listado Registrado")
-        if os.path.exists(CSV_EMPLEADOS):
-            df_all_emp = pd.read_csv(CSV_EMPLEADOS)
-            conteo = df_all_emp.groupby("empresa_id")["dni"].count().to_dict()
-            df_emp_list["Trabajadores"] = df_emp_list["empresa_id"].map(
-                lambda x: conteo.get(x, 0)
+        with st.container(border=True):
+            st.markdown("##### 📋 Listado Registrado")
+            if os.path.exists(CSV_EMPLEADOS):
+                df_all_emp = pd.read_csv(CSV_EMPLEADOS)
+                conteo = df_all_emp.groupby("empresa_id")["dni"].count().to_dict()
+                df_emp_list["Trabajadores"] = df_emp_list["empresa_id"].map(
+                    lambda x: conteo.get(x, 0)
+                )
+
+            st.dataframe(df_emp_list, use_container_width=True, hide_index=True)
+
+            st.divider()
+            st.markdown("##### 🚀 Activar Mejoras en Producción")
+            st.caption(
+                "Habilita las nuevas funciones desarrolladas para todas las"
+                " empresas en PRODUCCIÓN. Las empresas en DEV siempre las tienen"
+                " activas."
             )
 
-        st.dataframe(df_emp_list, use_container_width=True, hide_index=True)
+            valido, msg = validar_integridad_desarrollo()
+            estado_actual = st.session_state.get("mejoras_activadas_prod", False)
 
-        st.divider()
-        st.markdown("##### 🚀 Activar Mejoras en Producción")
-        st.caption(
-            "Habilita las nuevas funciones desarrolladas para todas las"
-            " empresas en PRODUCCIÓN. Las empresas en DEV siempre las tienen"
-            " activas."
-        )
-
-        valido, msg = validar_integridad_desarrollo()
-        estado_actual = st.session_state.get("mejoras_activadas_prod", False)
-
-        if estado_actual:
-            st.info("🟢 Estado: Las nuevas mejoras están ACTIVAS permanentemente en Producción.")
-        else:
-            if valido:
-                st.warning("🟡 Estado: Las nuevas mejoras solo están activas en DEV (Entorno listo para despliegue).")
+            if estado_actual:
+                st.info("🟢 Estado: Las nuevas mejoras están ACTIVAS permanentemente en Producción.")
             else:
-                st.error(f"🔴 Estado: Entorno DEV no verificado ({msg}).")
+                if valido:
+                    st.warning("🟡 Estado: Las nuevas mejoras solo están activas en DEV (Entorno listo para despliegue).")
+                else:
+                    st.error(f"🔴 Estado: Entorno DEV no verificado ({msg}).")
 
-            btn_activar = st.button(
-                "⚡ Activar y Desplegar Mejoras a Producción",
-                type="primary",
-                use_container_width=True,
-                key="btn_activar_prod"
-            )
+                btn_activar = st.button(
+                    "⚡ Activar y Desplegar Mejoras a Producción",
+                    type="primary",
+                    use_container_width=True,
+                    key="btn_activar_prod"
+                )
             
-            if btn_activar:
-                modal_confirmar_despliegue()
+                if btn_activar:
+                    modal_confirmar_despliegue()
 
     with c_dev2:
-        st.markdown("##### 📝 Crear / Editar Empresa")
+        with st.container(border=True):
+            st.markdown("##### 📝 Crear / Editar Empresa")
 
-        opciones_empresas = ["-- Registrar Nueva Empresa --"] + list(
-            df_emp_list["empresa_id"].unique()
-        )
-        emp_sel_ed = st.selectbox("Seleccionar Empresa:", opciones_empresas)
+            opciones_empresas = ["-- Registrar Nueva Empresa --"] + list(
+                df_emp_list["empresa_id"].unique()
+            )
+            emp_sel_ed = st.selectbox("Seleccionar Empresa:", opciones_empresas)
 
-        is_edit_emp = emp_sel_ed != "-- Registrar Nueva Empresa --"
+            is_edit_emp = emp_sel_ed != "-- Registrar Nueva Empresa --"
 
-        if is_edit_emp:
-            datos_emp_ed = df_emp_list[
-                df_emp_list["empresa_id"] == emp_sel_ed
-            ].iloc[0]
-            v_emp_code = str(datos_emp_ed["empresa_id"])
-            v_emp_rz = str(datos_emp_ed["razon_social"])
-            v_emp_ruc = str(datos_emp_ed.get("ruc", ""))
-            v_emp_plan = str(datos_emp_ed.get("plan", "BASIC"))
-            v_emp_ent = str(datos_emp_ed.get("entorno", "PROD"))
-        else:
-            v_emp_code = ""
-            v_emp_rz = ""
-            v_emp_ruc = ""
-            v_emp_plan = "BASIC"
-            v_emp_ent = "PROD"
-
-        ed_code = st.text_input(
-            "Código Empresa (ID):",
-            value=v_emp_code,
-            disabled=is_edit_emp,
-        )
-        ed_rz = st.text_input("Razón Social / Nombre:", value=v_emp_rz)
-        ed_ruc = st.text_input("RUC:", value=v_emp_ruc)
-        ed_plan = st.selectbox(
-            "Plan SaaS:",
-            ["BASIC", "PREMIUM", "ENTERPRISE", "DEVELOPER"],
-            index=(
-                ["BASIC", "PREMIUM", "ENTERPRISE", "DEVELOPER"].index(
-                    v_emp_plan
-                )
-                if v_emp_plan in ["BASIC", "PREMIUM", "ENTERPRISE", "DEVELOPER"]
-                else 0
-            ),
-        )
-        ed_entorno = st.selectbox(
-            "Entorno:", ["PROD", "DEV"], index=0 if v_emp_ent == "PROD" else 1
-        )
-
-        col_eb1, col_eb2 = st.columns(2)
-
-        with col_eb1:
             if is_edit_emp:
-                if st.button("💾 Guardar Empresa", use_container_width=True):
-                    datos_emp_upd = {
-                        "empresa_id": emp_sel_ed,
-                        "razon_social": ed_rz.strip().upper(),
-                        "ruc": ed_ruc.strip(),
-                        "plan": ed_plan,
-                        "entorno": ed_entorno,
-                    }
-                    if supabase:
-                        try:
-                            guardar_empresa_supabase(supabase, datos_emp_upd)
-                        except Exception as e:
-                            st.warning(
-                                "No se pudo guardar en la nube"
-                                f" ({e}). Se guardó solo local; se"
-                                " perderá en el próximo redespliegue."
-                            )
-
-                    df_e_all = cargar_empresas()
-                    idx_e = df_e_all[
-                        df_e_all["empresa_id"] == emp_sel_ed
-                    ].index
-                    if len(idx_e) > 0:
-                        for campo, valor in datos_emp_upd.items():
-                            if campo != "empresa_id":
-                                df_e_all.at[idx_e[0], campo] = valor
-                        with bloqueo_csv(CSV_EMPRESAS):
-                            df_e_all.to_csv(CSV_EMPRESAS, index=False)
-                    st.success("Datos de la empresa guardados.")
-                    st.rerun()
+                datos_emp_ed = df_emp_list[
+                    df_emp_list["empresa_id"] == emp_sel_ed
+                ].iloc[0]
+                v_emp_code = str(datos_emp_ed["empresa_id"])
+                v_emp_rz = str(datos_emp_ed["razon_social"])
+                v_emp_ruc = str(datos_emp_ed.get("ruc", ""))
+                v_emp_plan = str(datos_emp_ed.get("plan", "BASIC"))
+                v_emp_ent = str(datos_emp_ed.get("entorno", "PROD"))
             else:
-                if st.button("➕ Crear Empresa", use_container_width=True):
-                    if ed_code and ed_rz:
-                        code_c = ed_code.strip().upper()
+                v_emp_code = ""
+                v_emp_rz = ""
+                v_emp_ruc = ""
+                v_emp_plan = "BASIC"
+                v_emp_ent = "PROD"
+
+            ed_code = st.text_input(
+                "Código Empresa (ID):",
+                value=v_emp_code,
+                disabled=is_edit_emp,
+            )
+            ed_rz = st.text_input("Razón Social / Nombre:", value=v_emp_rz)
+            ed_ruc = st.text_input("RUC:", value=v_emp_ruc)
+            ed_plan = st.selectbox(
+                "Plan SaaS:",
+                ["BASIC", "PREMIUM", "ENTERPRISE", "DEVELOPER"],
+                index=(
+                    ["BASIC", "PREMIUM", "ENTERPRISE", "DEVELOPER"].index(
+                        v_emp_plan
+                    )
+                    if v_emp_plan in ["BASIC", "PREMIUM", "ENTERPRISE", "DEVELOPER"]
+                    else 0
+                ),
+            )
+            ed_entorno = st.selectbox(
+                "Entorno:", ["PROD", "DEV"], index=0 if v_emp_ent == "PROD" else 1
+            )
+
+            col_eb1, col_eb2 = st.columns(2)
+
+            with col_eb1:
+                if is_edit_emp:
+                    if st.button("💾 Guardar Empresa", use_container_width=True):
+                        datos_emp_upd = {
+                            "empresa_id": emp_sel_ed,
+                            "razon_social": ed_rz.strip().upper(),
+                            "ruc": ed_ruc.strip(),
+                            "plan": ed_plan,
+                            "entorno": ed_entorno,
+                        }
+                        if supabase:
+                            try:
+                                guardar_empresa_supabase(supabase, datos_emp_upd)
+                            except Exception as e:
+                                st.warning(
+                                    "No se pudo guardar en la nube"
+                                    f" ({e}). Se guardó solo local; se"
+                                    " perderá en el próximo redespliegue."
+                                )
+
                         df_e_all = cargar_empresas()
-
-                        if code_c in df_e_all["empresa_id"].values:
-                            st.error("El código de empresa ya existe.")
-                        else:
-                            new_e = {
-                                "empresa_id": code_c,
-                                "razon_social": ed_rz.strip().upper(),
-                                "ruc": ed_ruc.strip(),
-                                "plan": ed_plan,
-                                "estado": "ACTIVO",
-                                "entorno": ed_entorno,
-                            }
-
-                            if supabase:
-                                try:
-                                    guardar_empresa_supabase(
-                                        supabase, new_e
-                                    )
-                                except Exception as e:
-                                    st.warning(
-                                        "No se pudo guardar en la nube"
-                                        f" ({e}). Se guardó solo local;"
-                                        " se perderá en el próximo"
-                                        " redespliegue."
-                                    )
-
-                            df_e_all = pd.concat(
-                                [df_e_all, pd.DataFrame([new_e])],
-                                ignore_index=True,
-                            )
+                        idx_e = df_e_all[
+                            df_e_all["empresa_id"] == emp_sel_ed
+                        ].index
+                        if len(idx_e) > 0:
+                            for campo, valor in datos_emp_upd.items():
+                                if campo != "empresa_id":
+                                    df_e_all.at[idx_e[0], campo] = valor
                             with bloqueo_csv(CSV_EMPRESAS):
                                 df_e_all.to_csv(CSV_EMPRESAS, index=False)
-                            st.success(f"Empresa '{code_c}' creada.")
-                            st.rerun()
+                        st.success("Datos de la empresa guardados.")
+                        st.rerun()
+                else:
+                    if st.button("➕ Crear Empresa", use_container_width=True):
+                        if ed_code and ed_rz:
+                            code_c = ed_code.strip().upper()
+                            df_e_all = cargar_empresas()
 
-        with col_eb2:
-            if is_edit_emp:
-                if st.button("🗑️ Eliminar Empresa", use_container_width=True):
-                    if supabase:
-                        try:
-                            eliminar_empresa_supabase(supabase, emp_sel_ed)
-                        except Exception as e:
-                            st.warning(
-                                "No se pudo eliminar en la nube"
-                                f" ({e}). Se eliminó solo local."
-                            )
-                    df_e_all = cargar_empresas()
-                    df_e_all = df_e_all[df_e_all["empresa_id"] != emp_sel_ed]
-                    with bloqueo_csv(CSV_EMPRESAS):
-                        df_e_all.to_csv(CSV_EMPRESAS, index=False)
-                    st.warning("Empresa eliminada.")
-                    st.rerun()
+                            if code_c in df_e_all["empresa_id"].values:
+                                st.error("El código de empresa ya existe.")
+                            else:
+                                new_e = {
+                                    "empresa_id": code_c,
+                                    "razon_social": ed_rz.strip().upper(),
+                                    "ruc": ed_ruc.strip(),
+                                    "plan": ed_plan,
+                                    "estado": "ACTIVO",
+                                    "entorno": ed_entorno,
+                                }
+
+                                if supabase:
+                                    try:
+                                        guardar_empresa_supabase(
+                                            supabase, new_e
+                                        )
+                                    except Exception as e:
+                                        st.warning(
+                                            "No se pudo guardar en la nube"
+                                            f" ({e}). Se guardó solo local;"
+                                            " se perderá en el próximo"
+                                            " redespliegue."
+                                        )
+
+                                df_e_all = pd.concat(
+                                    [df_e_all, pd.DataFrame([new_e])],
+                                    ignore_index=True,
+                                )
+                                with bloqueo_csv(CSV_EMPRESAS):
+                                    df_e_all.to_csv(CSV_EMPRESAS, index=False)
+                                st.success(f"Empresa '{code_c}' creada.")
+                                st.rerun()
+
+            with col_eb2:
+                if is_edit_emp:
+                    if st.button("🗑️ Eliminar Empresa", use_container_width=True):
+                        if supabase:
+                            try:
+                                eliminar_empresa_supabase(supabase, emp_sel_ed)
+                            except Exception as e:
+                                st.warning(
+                                    "No se pudo eliminar en la nube"
+                                    f" ({e}). Se eliminó solo local."
+                                )
+                        df_e_all = cargar_empresas()
+                        df_e_all = df_e_all[df_e_all["empresa_id"] != emp_sel_ed]
+                        with bloqueo_csv(CSV_EMPRESAS):
+                            df_e_all.to_csv(CSV_EMPRESAS, index=False)
+                        st.warning("Empresa eliminada.")
+                        st.rerun()
 
 
 # ---------------------------------------------------------
@@ -3890,339 +3903,189 @@ elif opcion == "🔐 Panel de Gestión / Admin":
 
                 c_p1, c_p2 = st.columns([2.5, 1.5])
                 with c_p1:
-                    df_emp_display = df_empleados.copy()
-                    if "sedes_autorizadas" in df_emp_display.columns:
-                        df_emp_display["sedes_autorizadas"] = (
-                            df_emp_display["sedes_autorizadas"].apply(
-                                lambda x: (
-                                    ", ".join(json.loads(x))
-                                    if isinstance(x, str)
-                                    and x.startswith("[")
-                                    else str(x)
+                    with st.container(border=True):
+                        df_emp_display = df_empleados.copy()
+                        if "sedes_autorizadas" in df_emp_display.columns:
+                            df_emp_display["sedes_autorizadas"] = (
+                                df_emp_display["sedes_autorizadas"].apply(
+                                    lambda x: (
+                                        ", ".join(json.loads(x))
+                                        if isinstance(x, str)
+                                        and x.startswith("[")
+                                        else str(x)
+                                    )
                                 )
                             )
+                        st.dataframe(
+                            df_emp_display[[
+                                "dni",
+                                "nombre",
+                                "cargo",
+                                "sede_principal",
+                                "sedes_autorizadas",
+                                "fecha_ingreso",
+                            ]],
+                            use_container_width=True,
+                            hide_index=True,
                         )
-                    st.dataframe(
-                        df_emp_display[[
-                            "dni",
-                            "nombre",
-                            "cargo",
-                            "sede_principal",
-                            "sedes_autorizadas",
-                            "fecha_ingreso",
-                        ]],
-                        use_container_width=True,
-                        hide_index=True,
-                    )
 
                 with c_p2:
-                    st.markdown("#### 📝 Crear / Editar Trabajador")
+                    with st.container(border=True):
+                        st.markdown("#### 📝 Crear / Editar Trabajador")
 
-                    opciones_emp = ["-- Registrar Nuevo Empleado --"] + [
-                        f"{row['dni']} - {row['nombre']}"
-                        for _, row in df_empleados.iterrows()
-                    ]
-                    emp_sel_ed = st.selectbox(
-                        "Seleccionar para Editar:", opciones_emp
-                    )
-
-                    is_edit_e = emp_sel_ed != "-- Registrar Nuevo Empleado --"
-
-                    sedes_lista = (
-                        list(df_sedes["nombre_sede"].unique())
-                        if not df_sedes.empty
-                        else []
-                    )
-
-                    if is_edit_e:
-                        dni_extraido = emp_sel_ed.split(" - ")[0]
-                        datos_e = df_empleados[
-                            df_empleados["dni"].astype(str) == dni_extraido
-                        ].iloc[0]
-
-                        val_dni = str(datos_e["dni"])
-                        val_nom = str(datos_e["nombre"])
-                        val_car = str(datos_e["cargo"])
-                        val_sed_p = (
-                            str(datos_e.get("sede_principal", ""))
-                            if pd.notna(datos_e.get("sede_principal"))
-                            else ""
+                        opciones_emp = ["-- Registrar Nuevo Empleado --"] + [
+                            f"{row['dni']} - {row['nombre']}"
+                            for _, row in df_empleados.iterrows()
+                        ]
+                        emp_sel_ed = st.selectbox(
+                            "Seleccionar para Editar:", opciones_emp
                         )
 
-                        try:
-                            raw_sedes = json.loads(
-                                datos_e.get("sedes_autorizadas", "[]")
+                        is_edit_e = emp_sel_ed != "-- Registrar Nuevo Empleado --"
+
+                        sedes_lista = (
+                            list(df_sedes["nombre_sede"].unique())
+                            if not df_sedes.empty
+                            else []
+                        )
+
+                        if is_edit_e:
+                            dni_extraido = emp_sel_ed.split(" - ")[0]
+                            datos_e = df_empleados[
+                                df_empleados["dni"].astype(str) == dni_extraido
+                            ].iloc[0]
+
+                            val_dni = str(datos_e["dni"])
+                            val_nom = str(datos_e["nombre"])
+                            val_car = str(datos_e["cargo"])
+                            val_sed_p = (
+                                str(datos_e.get("sede_principal", ""))
+                                if pd.notna(datos_e.get("sede_principal"))
+                                else ""
                             )
-                            if isinstance(raw_sedes, list):
-                                val_sed_a = [
-                                    str(s)
-                                    for s in raw_sedes
-                                    if pd.notna(s)
-                                    and str(s).strip() != ""
-                                    and str(s) != "None"
-                                ]
-                            else:
+
+                            try:
+                                raw_sedes = json.loads(
+                                    datos_e.get("sedes_autorizadas", "[]")
+                                )
+                                if isinstance(raw_sedes, list):
+                                    val_sed_a = [
+                                        str(s)
+                                        for s in raw_sedes
+                                        if pd.notna(s)
+                                        and str(s).strip() != ""
+                                        and str(s) != "None"
+                                    ]
+                                else:
+                                    val_sed_a = [val_sed_p] if val_sed_p else []
+                            except Exception:
                                 val_sed_a = [val_sed_p] if val_sed_p else []
-                        except Exception:
-                            val_sed_a = [val_sed_p] if val_sed_p else []
 
-                        val_pas = ""  # nunca se muestra el hash guardado
-                    else:
-                        val_dni = ""
-                        val_nom = ""
-                        val_car = ""
-                        val_sed_p = sedes_lista[0] if sedes_lista else ""
-                        val_sed_a = sedes_lista.copy()
-                        val_pas = PASSWORD_EMPLEADO_DEFAULT
-
-                    default_sedes_validas = [
-                        s for s in val_sed_a if s in sedes_lista
-                    ]
-
-                    e_dni = st.text_input(
-                        "DNI:", value=val_dni, disabled=is_edit_e
-                    )
-                    e_nombre = st.text_input("Nombre Completo:", value=val_nom)
-                    e_cargo = st.text_input("Cargo:", value=val_car)
-
-                    idx_sede_default = (
-                        sedes_lista.index(val_sed_p)
-                        if val_sed_p in sedes_lista
-                        else 0
-                    )
-                    e_sede_principal = st.selectbox(
-                        "Sede Principal (Para Reportes):",
-                        sedes_lista,
-                        index=idx_sede_default if sedes_lista else 0,
-                    )
-
-                    e_sedes_autorizadas = st.multiselect(
-                        "Sedes Autorizadas para Marcar:",
-                        options=sedes_lista,
-                        default=default_sedes_validas,
-                    )
-
-                    e_pass = st.text_input(
-                        "Contraseña Marcación:"
-                        + (
-                            " (déjala en blanco para no cambiarla)"
-                            if is_edit_e
-                            else ""
-                        ),
-                        value=val_pas,
-                        type="password",
-                    )
-
-                    col_btn_e1, col_btn_e2 = st.columns(2)
-
-                    with col_btn_e1:
-                        if is_edit_e:
-                            if st.button(
-                                "💾 Actualizar Datos",
-                                use_container_width=True,
-                            ):
-                                sedes_finales = (
-                                    e_sedes_autorizadas
-                                    if e_sedes_autorizadas
-                                    else [e_sede_principal]
-                                )
-                                if e_sede_principal not in sedes_finales:
-                                    sedes_finales.append(e_sede_principal)
-
-                                datos_actualizados = {
-                                    "empresa_id": st.session_state.empresa_id,
-                                    "dni": val_dni,
-                                    "nombre": e_nombre.strip().upper(),
-                                    "cargo": e_cargo.strip().upper(),
-                                    "sede_principal": e_sede_principal,
-                                    "sedes_autorizadas": json.dumps(
-                                        sedes_finales
-                                    ),
-                                }
-                                if e_pass.strip():
-                                    # Solo se toca la contraseña si el
-                                    # admin escribió una nueva; si la dejó
-                                    # en blanco, la que ya estaba guardada
-                                    # no se modifica.
-                                    datos_actualizados["password"] = (
-                                        _hash_clave(e_pass.strip())
-                                    )
-
-                                if supabase:
-                                    try:
-                                        guardar_empleado_supabase(
-                                            supabase, datos_actualizados
-                                        )
-                                    except Exception as e:
-                                        st.warning(
-                                            "No se pudo guardar en la nube"
-                                            f" ({e}). Se guardó solo local;"
-                                            " se perderá en el próximo"
-                                            " redespliegue."
-                                        )
-
-                                # Se actualiza también el CSV local (caché
-                                # inmediata / respaldo offline).
-                                if os.path.exists(CSV_EMPLEADOS):
-                                    with bloqueo_csv(CSV_EMPLEADOS):
-                                        df_emp_full = pd.read_csv(CSV_EMPLEADOS)
-                                        df_emp_full["dni"] = df_emp_full[
-                                            "dni"
-                                        ].astype(str)
-                                        idx_e = df_emp_full[
-                                            (
-                                                df_emp_full[
-                                                    "empresa_id"
-                                                ].astype(str)
-                                                == str(
-                                                    st.session_state.empresa_id
-                                                )
-                                            )
-                                            & (
-                                                df_emp_full["dni"].astype(str)
-                                                == val_dni
-                                            )
-                                        ].index
-                                        if len(idx_e) > 0:
-                                            for campo, valor in (
-                                                datos_actualizados.items()
-                                            ):
-                                                df_emp_full.at[
-                                                    idx_e[0], campo
-                                                ] = valor
-                                            df_emp_full.to_csv(
-                                                CSV_EMPLEADOS, index=False
-                                            )
-
-                                st.success(
-                                    "Datos del trabajador actualizados."
-                                )
-                                st.rerun()
+                            val_pas = ""  # nunca se muestra el hash guardado
                         else:
-                            if st.button(
-                                "➕ Agregar Empleado",
-                                use_container_width=True,
-                            ):
-                                if e_dni and e_nombre:
-                                    if (
-                                        (
-                                            df_empleados["empresa_id"].astype(
-                                                str
+                            val_dni = ""
+                            val_nom = ""
+                            val_car = ""
+                            val_sed_p = sedes_lista[0] if sedes_lista else ""
+                            val_sed_a = sedes_lista.copy()
+                            val_pas = PASSWORD_EMPLEADO_DEFAULT
+
+                        default_sedes_validas = [
+                            s for s in val_sed_a if s in sedes_lista
+                        ]
+
+                        e_dni = st.text_input(
+                            "DNI:", value=val_dni, disabled=is_edit_e
+                        )
+                        e_nombre = st.text_input("Nombre Completo:", value=val_nom)
+                        e_cargo = st.text_input("Cargo:", value=val_car)
+
+                        idx_sede_default = (
+                            sedes_lista.index(val_sed_p)
+                            if val_sed_p in sedes_lista
+                            else 0
+                        )
+                        e_sede_principal = st.selectbox(
+                            "Sede Principal (Para Reportes):",
+                            sedes_lista,
+                            index=idx_sede_default if sedes_lista else 0,
+                        )
+
+                        e_sedes_autorizadas = st.multiselect(
+                            "Sedes Autorizadas para Marcar:",
+                            options=sedes_lista,
+                            default=default_sedes_validas,
+                        )
+
+                        e_pass = st.text_input(
+                            "Contraseña Marcación:"
+                            + (
+                                " (déjala en blanco para no cambiarla)"
+                                if is_edit_e
+                                else ""
+                            ),
+                            value=val_pas,
+                            type="password",
+                        )
+
+                        col_btn_e1, col_btn_e2 = st.columns(2)
+
+                        with col_btn_e1:
+                            if is_edit_e:
+                                if st.button(
+                                    "💾 Actualizar Datos",
+                                    use_container_width=True,
+                                    type="primary",
+                                ):
+                                    sedes_finales = (
+                                        e_sedes_autorizadas
+                                        if e_sedes_autorizadas
+                                        else [e_sede_principal]
+                                    )
+                                    if e_sede_principal not in sedes_finales:
+                                        sedes_finales.append(e_sede_principal)
+
+                                    datos_actualizados = {
+                                        "empresa_id": st.session_state.empresa_id,
+                                        "dni": val_dni,
+                                        "nombre": e_nombre.strip().upper(),
+                                        "cargo": e_cargo.strip().upper(),
+                                        "sede_principal": e_sede_principal,
+                                        "sedes_autorizadas": json.dumps(
+                                            sedes_finales
+                                        ),
+                                    }
+                                    if e_pass.strip():
+                                        # Solo se toca la contraseña si el
+                                        # admin escribió una nueva; si la dejó
+                                        # en blanco, la que ya estaba guardada
+                                        # no se modifica.
+                                        datos_actualizados["password"] = (
+                                            _hash_clave(e_pass.strip())
+                                        )
+
+                                    if supabase:
+                                        try:
+                                            guardar_empleado_supabase(
+                                                supabase, datos_actualizados
                                             )
-                                            == str(
-                                                st.session_state.empresa_id
-                                            )
-                                        )
-                                        & (
-                                            df_empleados["dni"].astype(str)
-                                            == e_dni.strip()
-                                        )
-                                    ).any():
-                                        st.error(
-                                            "El DNI ingresado ya existe en esta"
-                                            " empresa."
-                                        )
-                                    else:
-                                        sedes_finales = (
-                                            e_sedes_autorizadas
-                                            if e_sedes_autorizadas
-                                            else [e_sede_principal]
-                                        )
-                                        if (
-                                            e_sede_principal
-                                            not in sedes_finales
-                                        ):
-                                            sedes_finales.append(
-                                                e_sede_principal
+                                        except Exception as e:
+                                            st.warning(
+                                                "No se pudo guardar en la nube"
+                                                f" ({e}). Se guardó solo local;"
+                                                " se perderá en el próximo"
+                                                " redespliegue."
                                             )
 
-                                        nuevo_emp = {
-                                            "empresa_id": (
-                                                st.session_state.empresa_id
-                                            ),
-                                            "dni": e_dni.strip(),
-                                            "nombre": e_nombre.strip().upper(),
-                                            "sede_principal": e_sede_principal,
-                                            "sedes_autorizadas": json.dumps(
-                                                sedes_finales
-                                            ),
-                                            "cargo": e_cargo.strip().upper(),
-                                            "password": _hash_clave(
-                                                e_pass.strip()
-                                                if e_pass.strip()
-                                                else PASSWORD_EMPLEADO_DEFAULT
-                                            ),
-                                            "horario_personalizado": "{}",
-                                            "fecha_ingreso": (
-                                                hoy_peru().strftime(
-                                                    "%Y-%m-%d"
-                                                )
-                                            ),
-                                        }
-
-                                        if supabase:
-                                            try:
-                                                guardar_empleado_supabase(
-                                                    supabase, nuevo_emp
-                                                )
-                                            except Exception as e:
-                                                st.warning(
-                                                    "No se pudo guardar en"
-                                                    f" la nube ({e}). Se"
-                                                    " guardó solo local; se"
-                                                    " perderá en el próximo"
-                                                    " redespliegue."
-                                                )
-
-                                        # Copia local (caché / respaldo
-                                        # offline).
+                                    # Se actualiza también el CSV local (caché
+                                    # inmediata / respaldo offline).
+                                    if os.path.exists(CSV_EMPLEADOS):
                                         with bloqueo_csv(CSV_EMPLEADOS):
-                                            if os.path.exists(CSV_EMPLEADOS):
-                                                df_emp_full = pd.read_csv(
-                                                    CSV_EMPLEADOS
-                                                )
-                                            else:
-                                                df_emp_full = pd.DataFrame()
-                                            df_emp_full = pd.concat(
-                                                [
-                                                    df_emp_full,
-                                                    pd.DataFrame([nuevo_emp]),
-                                                ],
-                                                ignore_index=True,
-                                            )
-                                            df_emp_full.to_csv(
-                                                CSV_EMPLEADOS, index=False
-                                            )
-                                        st.success(
-                                            "Empleado registrado"
-                                            " correctamente."
-                                        )
-                                        st.rerun()
-
-                    with col_btn_e2:
-                        if is_edit_e:
-                            if st.button(
-                                "🗑️ Eliminar Trabajador",
-                                use_container_width=True,
-                            ):
-                                if supabase:
-                                    try:
-                                        eliminar_empleado_supabase(
-                                            supabase,
-                                            st.session_state.empresa_id,
-                                            val_dni,
-                                        )
-                                    except Exception as e:
-                                        st.warning(
-                                            "No se pudo eliminar en la nube"
-                                            f" ({e}). Se eliminó solo local."
-                                        )
-
-                                if os.path.exists(CSV_EMPLEADOS):
-                                    with bloqueo_csv(CSV_EMPLEADOS):
-                                        df_emp_full = pd.read_csv(CSV_EMPLEADOS)
-                                        df_emp_full = df_emp_full[
-                                            ~(
+                                            df_emp_full = pd.read_csv(CSV_EMPLEADOS)
+                                            df_emp_full["dni"] = df_emp_full[
+                                                "dni"
+                                            ].astype(str)
+                                            idx_e = df_emp_full[
                                                 (
                                                     df_emp_full[
                                                         "empresa_id"
@@ -4235,135 +4098,290 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                                     df_emp_full["dni"].astype(str)
                                                     == val_dni
                                                 )
+                                            ].index
+                                            if len(idx_e) > 0:
+                                                for campo, valor in (
+                                                    datos_actualizados.items()
+                                                ):
+                                                    df_emp_full.at[
+                                                        idx_e[0], campo
+                                                    ] = valor
+                                                df_emp_full.to_csv(
+                                                    CSV_EMPLEADOS, index=False
+                                                )
+
+                                    st.success(
+                                        "Datos del trabajador actualizados."
+                                    )
+                                    st.rerun()
+                            else:
+                                if st.button(
+                                    "➕ Agregar Empleado",
+                                    use_container_width=True,
+                                    type="primary",
+                                ):
+                                    if e_dni and e_nombre:
+                                        if (
+                                            (
+                                                df_empleados["empresa_id"].astype(
+                                                    str
+                                                )
+                                                == str(
+                                                    st.session_state.empresa_id
+                                                )
                                             )
-                                        ]
+                                            & (
+                                                df_empleados["dni"].astype(str)
+                                                == e_dni.strip()
+                                            )
+                                        ).any():
+                                            st.error(
+                                                "El DNI ingresado ya existe en esta"
+                                                " empresa."
+                                            )
+                                        else:
+                                            sedes_finales = (
+                                                e_sedes_autorizadas
+                                                if e_sedes_autorizadas
+                                                else [e_sede_principal]
+                                            )
+                                            if (
+                                                e_sede_principal
+                                                not in sedes_finales
+                                            ):
+                                                sedes_finales.append(
+                                                    e_sede_principal
+                                                )
+
+                                            nuevo_emp = {
+                                                "empresa_id": (
+                                                    st.session_state.empresa_id
+                                                ),
+                                                "dni": e_dni.strip(),
+                                                "nombre": e_nombre.strip().upper(),
+                                                "sede_principal": e_sede_principal,
+                                                "sedes_autorizadas": json.dumps(
+                                                    sedes_finales
+                                                ),
+                                                "cargo": e_cargo.strip().upper(),
+                                                "password": _hash_clave(
+                                                    e_pass.strip()
+                                                    if e_pass.strip()
+                                                    else PASSWORD_EMPLEADO_DEFAULT
+                                                ),
+                                                "horario_personalizado": "{}",
+                                                "fecha_ingreso": (
+                                                    hoy_peru().strftime(
+                                                        "%Y-%m-%d"
+                                                    )
+                                                ),
+                                            }
+
+                                            if supabase:
+                                                try:
+                                                    guardar_empleado_supabase(
+                                                        supabase, nuevo_emp
+                                                    )
+                                                except Exception as e:
+                                                    st.warning(
+                                                        "No se pudo guardar en"
+                                                        f" la nube ({e}). Se"
+                                                        " guardó solo local; se"
+                                                        " perderá en el próximo"
+                                                        " redespliegue."
+                                                    )
+
+                                            # Copia local (caché / respaldo
+                                            # offline).
+                                            with bloqueo_csv(CSV_EMPLEADOS):
+                                                if os.path.exists(CSV_EMPLEADOS):
+                                                    df_emp_full = pd.read_csv(
+                                                        CSV_EMPLEADOS
+                                                    )
+                                                else:
+                                                    df_emp_full = pd.DataFrame()
+                                                df_emp_full = pd.concat(
+                                                    [
+                                                        df_emp_full,
+                                                        pd.DataFrame([nuevo_emp]),
+                                                    ],
+                                                    ignore_index=True,
+                                                )
+                                                df_emp_full.to_csv(
+                                                    CSV_EMPLEADOS, index=False
+                                                )
+                                            st.success(
+                                                "Empleado registrado"
+                                                " correctamente."
+                                            )
+                                            st.rerun()
+
+                        with col_btn_e2:
+                            if is_edit_e:
+                                if st.button(
+                                    "🗑️ Eliminar Trabajador",
+                                    use_container_width=True,
+                                ):
+                                    if supabase:
+                                        try:
+                                            eliminar_empleado_supabase(
+                                                supabase,
+                                                st.session_state.empresa_id,
+                                                val_dni,
+                                            )
+                                        except Exception as e:
+                                            st.warning(
+                                                "No se pudo eliminar en la nube"
+                                                f" ({e}). Se eliminó solo local."
+                                            )
+
+                                    if os.path.exists(CSV_EMPLEADOS):
+                                        with bloqueo_csv(CSV_EMPLEADOS):
+                                            df_emp_full = pd.read_csv(CSV_EMPLEADOS)
+                                            df_emp_full = df_emp_full[
+                                                ~(
+                                                    (
+                                                        df_emp_full[
+                                                            "empresa_id"
+                                                        ].astype(str)
+                                                        == str(
+                                                            st.session_state.empresa_id
+                                                        )
+                                                    )
+                                                    & (
+                                                        df_emp_full["dni"].astype(str)
+                                                        == val_dni
+                                                    )
+                                                )
+                                            ]
+                                            df_emp_full.to_csv(
+                                                CSV_EMPLEADOS, index=False
+                                            )
+                                    st.warning("Trabajador eliminado.")
+                                    st.rerun()
+
+                st.write("")
+                with st.container(border=True):
+                    st.markdown("#### ⚙️ Personalizar Horario por Trabajador")
+                    emp_h_sel = st.selectbox(
+                        "Seleccionar Empleado:", df_empleados["nombre"].unique()
+                    )
+
+                    if emp_h_sel:
+                        emp_h_idx = df_empleados[
+                            df_empleados["nombre"] == emp_h_sel
+                        ].index[0]
+                        emp_h_row = df_empleados.loc[emp_h_idx]
+
+                        try:
+                            h_dict_actual = json.loads(
+                                emp_h_row.get("horario_personalizado", "{}")
+                            )
+                        except Exception:
+                            h_dict_actual = {}
+
+                        st.caption(
+                            "Define horarios específicos por día para este"
+                            " trabajador (Sobrescribe el horario de la sede)."
+                        )
+
+                        nuevo_h_dict = {}
+                        cols_dias = st.columns(6)
+                        dias_semana = [
+                            "Lunes",
+                            "Martes",
+                            "Miércoles",
+                            "Jueves",
+                            "Viernes",
+                            "Sábado",
+                        ]
+
+                        for idx_d, dia in enumerate(dias_semana):
+                            with cols_dias[idx_d]:
+                                st.markdown(f"**{dia}**")
+                                activo = st.checkbox(
+                                    "Aplica",
+                                    value=h_dict_actual.get(dia, {}).get(
+                                        "activo", True
+                                    ),
+                                    key=f"chk_{dia}",
+                                )
+                                val_ent = h_dict_actual.get(dia, {}).get(
+                                    "entrada", "08:00:00"
+                                )
+                                val_sal = h_dict_actual.get(dia, {}).get(
+                                    "salida", "17:00:00"
+                                )
+
+                                t_ent = st.time_input(
+                                    "Entrada",
+                                    value=datetime.strptime(
+                                        val_ent, "%H:%M:%S"
+                                    ).time(),
+                                    key=f"ent_{dia}",
+                                )
+                                t_sal = st.time_input(
+                                    "Salida",
+                                    value=datetime.strptime(
+                                        val_sal, "%H:%M:%S"
+                                    ).time(),
+                                    key=f"sal_{dia}",
+                                )
+
+                                nuevo_h_dict[dia] = {
+                                    "activo": activo,
+                                    "entrada": t_ent.strftime("%H:%M:%S"),
+                                    "salida": t_sal.strftime("%H:%M:%S"),
+                                }
+
+                        if st.button("💾 Guardar Horario Personalizado"):
+                            dni_h = str(emp_h_row["dni"])
+                            horario_json = json.dumps(nuevo_h_dict)
+
+                            if supabase:
+                                try:
+                                    guardar_empleado_supabase(
+                                        supabase,
+                                        {
+                                            "empresa_id": (
+                                                st.session_state.empresa_id
+                                            ),
+                                            "dni": dni_h,
+                                            "horario_personalizado": (
+                                                horario_json
+                                            ),
+                                        },
+                                    )
+                                except Exception as e:
+                                    st.warning(
+                                        "No se pudo guardar en la nube"
+                                        f" ({e}). Se guardó solo local; se"
+                                        " perderá en el próximo redespliegue."
+                                    )
+
+                            if os.path.exists(CSV_EMPLEADOS):
+                                with bloqueo_csv(CSV_EMPLEADOS):
+                                    df_emp_full = pd.read_csv(CSV_EMPLEADOS)
+                                    df_emp_full["dni"] = df_emp_full["dni"].astype(
+                                        str
+                                    )
+                                    idx_h = df_emp_full[
+                                        (
+                                            df_emp_full["empresa_id"].astype(str)
+                                            == str(st.session_state.empresa_id)
+                                        )
+                                        & (df_emp_full["dni"] == dni_h)
+                                    ].index
+                                    if len(idx_h) > 0:
+                                        df_emp_full.at[
+                                            idx_h[0], "horario_personalizado"
+                                        ] = horario_json
                                         df_emp_full.to_csv(
                                             CSV_EMPLEADOS, index=False
                                         )
-                                st.warning("Trabajador eliminado.")
-                                st.rerun()
-
-                st.divider()
-                st.markdown("#### ⚙️ Personalizar Horario por Trabajador")
-                emp_h_sel = st.selectbox(
-                    "Seleccionar Empleado:", df_empleados["nombre"].unique()
-                )
-
-                if emp_h_sel:
-                    emp_h_idx = df_empleados[
-                        df_empleados["nombre"] == emp_h_sel
-                    ].index[0]
-                    emp_h_row = df_empleados.loc[emp_h_idx]
-
-                    try:
-                        h_dict_actual = json.loads(
-                            emp_h_row.get("horario_personalizado", "{}")
-                        )
-                    except Exception:
-                        h_dict_actual = {}
-
-                    st.caption(
-                        "Define horarios específicos por día para este"
-                        " trabajador (Sobrescribe el horario de la sede)."
-                    )
-
-                    nuevo_h_dict = {}
-                    cols_dias = st.columns(6)
-                    dias_semana = [
-                        "Lunes",
-                        "Martes",
-                        "Miércoles",
-                        "Jueves",
-                        "Viernes",
-                        "Sábado",
-                    ]
-
-                    for idx_d, dia in enumerate(dias_semana):
-                        with cols_dias[idx_d]:
-                            st.markdown(f"**{dia}**")
-                            activo = st.checkbox(
-                                "Aplica",
-                                value=h_dict_actual.get(dia, {}).get(
-                                    "activo", True
-                                ),
-                                key=f"chk_{dia}",
+                            st.success(
+                                "Horario individual guardado correctamente."
                             )
-                            val_ent = h_dict_actual.get(dia, {}).get(
-                                "entrada", "08:00:00"
-                            )
-                            val_sal = h_dict_actual.get(dia, {}).get(
-                                "salida", "17:00:00"
-                            )
-
-                            t_ent = st.time_input(
-                                "Entrada",
-                                value=datetime.strptime(
-                                    val_ent, "%H:%M:%S"
-                                ).time(),
-                                key=f"ent_{dia}",
-                            )
-                            t_sal = st.time_input(
-                                "Salida",
-                                value=datetime.strptime(
-                                    val_sal, "%H:%M:%S"
-                                ).time(),
-                                key=f"sal_{dia}",
-                            )
-
-                            nuevo_h_dict[dia] = {
-                                "activo": activo,
-                                "entrada": t_ent.strftime("%H:%M:%S"),
-                                "salida": t_sal.strftime("%H:%M:%S"),
-                            }
-
-                    if st.button("💾 Guardar Horario Personalizado"):
-                        dni_h = str(emp_h_row["dni"])
-                        horario_json = json.dumps(nuevo_h_dict)
-
-                        if supabase:
-                            try:
-                                guardar_empleado_supabase(
-                                    supabase,
-                                    {
-                                        "empresa_id": (
-                                            st.session_state.empresa_id
-                                        ),
-                                        "dni": dni_h,
-                                        "horario_personalizado": (
-                                            horario_json
-                                        ),
-                                    },
-                                )
-                            except Exception as e:
-                                st.warning(
-                                    "No se pudo guardar en la nube"
-                                    f" ({e}). Se guardó solo local; se"
-                                    " perderá en el próximo redespliegue."
-                                )
-
-                        if os.path.exists(CSV_EMPLEADOS):
-                            with bloqueo_csv(CSV_EMPLEADOS):
-                                df_emp_full = pd.read_csv(CSV_EMPLEADOS)
-                                df_emp_full["dni"] = df_emp_full["dni"].astype(
-                                    str
-                                )
-                                idx_h = df_emp_full[
-                                    (
-                                        df_emp_full["empresa_id"].astype(str)
-                                        == str(st.session_state.empresa_id)
-                                    )
-                                    & (df_emp_full["dni"] == dni_h)
-                                ].index
-                                if len(idx_h) > 0:
-                                    df_emp_full.at[
-                                        idx_h[0], "horario_personalizado"
-                                    ] = horario_json
-                                    df_emp_full.to_csv(
-                                        CSV_EMPLEADOS, index=False
-                                    )
-                        st.success(
-                            "Horario individual guardado correctamente."
-                        )
 
             with tab_objs[4]:
                 st.subheader(
@@ -4379,31 +4397,33 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                 with subtab_reglas:
                     c_r1, c_r2 = st.columns(2)
                     with c_r1:
-                        st.markdown("#### Tolerancia de Entrada")
-                        tol_ingresada = st.number_input(
-                            "Minutos de Gracia:",
-                            value=st.session_state.tolerancia_minutos,
-                            min_value=0,
-                            max_value=60,
-                        )
-                        f_ini_tol = st.date_input(
-                            "Vigente a partir de:",
-                            value=st.session_state.fecha_inicio_tolerancia,
-                        )
-
-                        if st.button("Actualizar Regla de Tolerancia"):
-                            st.session_state.tolerancia_minutos = tol_ingresada
-                            st.session_state.fecha_inicio_tolerancia = (
-                                f_ini_tol
+                        with st.container(border=True):
+                            st.markdown("#### Tolerancia de Entrada")
+                            tol_ingresada = st.number_input(
+                                "Minutos de Gracia:",
+                                value=st.session_state.tolerancia_minutos,
+                                min_value=0,
+                                max_value=60,
                             )
-                            st.success("Regla de tolerancia actualizada.")
+                            f_ini_tol = st.date_input(
+                                "Vigente a partir de:",
+                                value=st.session_state.fecha_inicio_tolerancia,
+                            )
+
+                            if st.button("Actualizar Regla de Tolerancia"):
+                                st.session_state.tolerancia_minutos = tol_ingresada
+                                st.session_state.fecha_inicio_tolerancia = (
+                                    f_ini_tol
+                                )
+                                st.success("Regla de tolerancia actualizada.")
 
                     with c_r2:
-                        st.markdown("#### Reglas Complementarias")
-                        st.info(
-                            "Todas las tardanzas se convierten a formato decimal"
-                            " y horas para consolidar informes."
-                        )
+                        with st.container(border=True):
+                            st.markdown("#### Reglas Complementarias")
+                            st.info(
+                                "Todas las tardanzas se convierten a formato decimal"
+                                " y horas para consolidar informes."
+                            )
 
                 with subtab_respaldo:
                     st.markdown("#### ☁️ Panel Maestro de SuperAdmin / Respaldo")
@@ -4815,97 +4835,98 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                             )
 
                 with subtab_seguridad:
-                    st.markdown("#### 🔑 Administración de Claves de Acceso")
-                    st.caption(
-                        "Estos cambios se guardan en Supabase y aplican a"
-                        f" la empresa `{st.session_state.empresa_id}`."
-                    )
-                    st.info(
-                        "🔒 Por seguridad, los PINs y contraseñas ya no se"
-                        " muestran en pantalla ni se guardan como texto"
-                        " plano (se guarda un hash). Deja un campo en"
-                        " blanco si no quieres cambiar esa clave."
-                    )
+                    with st.container(border=True):
+                        st.markdown("#### 🔑 Administración de Claves de Acceso")
+                        st.caption(
+                            "Estos cambios se guardan en Supabase y aplican a"
+                            f" la empresa `{st.session_state.empresa_id}`."
+                        )
+                        st.info(
+                            "🔒 Por seguridad, los PINs y contraseñas ya no se"
+                            " muestran en pantalla ni se guardan como texto"
+                            " plano (se guarda un hash). Deja un campo en"
+                            " blanco si no quieres cambiar esa clave."
+                        )
 
-                    p_admin = st.text_input(
-                        "Nuevo PIN SuperAdmin (déjalo en blanco para no"
-                        " cambiarlo):",
-                        value="",
-                        type="password",
-                    )
-                    p_visor = st.text_input(
-                        "Nuevo PIN Admin (déjalo en blanco para no"
-                        " cambiarlo):",
-                        value="",
-                        type="password",
-                    )
-
-                    if st.session_state.rol == "master":
-                        p_master = st.text_input(
-                            "Nuevo PIN Developer (déjalo en blanco para no"
+                        p_admin = st.text_input(
+                            "Nuevo PIN SuperAdmin (déjalo en blanco para no"
                             " cambiarlo):",
                             value="",
                             type="password",
                         )
-                    else:
-                        p_master = ""
-                        st.caption(
-                            "🔒 El PIN Developer solo es visible y editable"
-                            " para quien ingresa con esa clave."
+                        p_visor = st.text_input(
+                            "Nuevo PIN Admin (déjalo en blanco para no"
+                            " cambiarlo):",
+                            value="",
+                            type="password",
                         )
 
-                    c_excel = st.text_input(
-                        "Nueva Clave de Protección Excel (déjala en blanco"
-                        " para no cambiarla):",
-                        value="",
-                        type="password",
-                    )
-
-                    if st.button("Guardar Nuevas Claves"):
-                        campos_a_guardar = {}
-                        if p_admin:
-                            campos_a_guardar["pin_admin"] = _hash_clave(
-                                p_admin
-                            )
-                        if p_visor:
-                            campos_a_guardar["pin_visor"] = _hash_clave(
-                                p_visor
-                            )
-                        if p_master:
-                            campos_a_guardar["pin_master"] = _hash_clave(
-                                p_master
-                            )
-                        if c_excel:
-                            # La clave de Excel se guarda tal cual (texto
-                            # plano) porque openpyxl necesita el valor
-                            # real para proteger la hoja de cálculo; no
-                            # es una clave de login como las demás.
-                            campos_a_guardar["clave_excel"] = c_excel
-
-                        if not campos_a_guardar:
-                            st.info(
-                                "No escribiste ningún valor nuevo, no se"
-                                " guardó nada."
+                        if st.session_state.rol == "master":
+                            p_master = st.text_input(
+                                "Nuevo PIN Developer (déjalo en blanco para no"
+                                " cambiarlo):",
+                                value="",
+                                type="password",
                             )
                         else:
-                            try:
-                                guardar_configuracion_sistema(
-                                    supabase,
-                                    st.session_state.empresa_id,
-                                    **campos_a_guardar,
+                            p_master = ""
+                            st.caption(
+                                "🔒 El PIN Developer solo es visible y editable"
+                                " para quien ingresa con esa clave."
+                            )
+
+                        c_excel = st.text_input(
+                            "Nueva Clave de Protección Excel (déjala en blanco"
+                            " para no cambiarla):",
+                            value="",
+                            type="password",
+                        )
+
+                        if st.button("Guardar Nuevas Claves", type="primary"):
+                            campos_a_guardar = {}
+                            if p_admin:
+                                campos_a_guardar["pin_admin"] = _hash_clave(
+                                    p_admin
                                 )
-                                for campo, valor in (
-                                    campos_a_guardar.items()
-                                ):
-                                    setattr(
-                                        st.session_state, campo, valor
+                            if p_visor:
+                                campos_a_guardar["pin_visor"] = _hash_clave(
+                                    p_visor
+                                )
+                            if p_master:
+                                campos_a_guardar["pin_master"] = _hash_clave(
+                                    p_master
+                                )
+                            if c_excel:
+                                # La clave de Excel se guarda tal cual (texto
+                                # plano) porque openpyxl necesita el valor
+                                # real para proteger la hoja de cálculo; no
+                                # es una clave de login como las demás.
+                                campos_a_guardar["clave_excel"] = c_excel
+
+                            if not campos_a_guardar:
+                                st.info(
+                                    "No escribiste ningún valor nuevo, no se"
+                                    " guardó nada."
+                                )
+                            else:
+                                try:
+                                    guardar_configuracion_sistema(
+                                        supabase,
+                                        st.session_state.empresa_id,
+                                        **campos_a_guardar,
                                     )
-                                st.success(
-                                    "✅ Configuración de seguridad"
-                                    " actualizada y guardada en Supabase."
-                                )
-                            except Exception as e_cfg:
-                                st.error(
-                                    f"No se pudo guardar en Supabase:"
-                                    f" {e_cfg}"
-                                )
+                                    for campo, valor in (
+                                        campos_a_guardar.items()
+                                    ):
+                                        setattr(
+                                            st.session_state, campo, valor
+                                        )
+                                    st.success(
+                                        "✅ Configuración de seguridad"
+                                        " actualizada y guardada en Supabase."
+                                    )
+                                except Exception as e_cfg:
+                                    st.error(
+                                        f"No se pudo guardar en Supabase:"
+                                        f" {e_cfg}"
+                                    )
