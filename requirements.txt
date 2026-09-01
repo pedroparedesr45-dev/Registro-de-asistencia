@@ -9,3 +9,4 @@ Pillow
 streamlit-js-eval
 tzdata
 opencv-python-headless
+mediapipe

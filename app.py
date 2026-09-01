@@ -27,10 +27,22 @@ from openpyxl.utils import get_column_letter
 from PIL import Image
 from streamlit_js_eval import get_geolocation, streamlit_js_eval
 
-# Detección de rostro (Nivel 1 de validación facial). Import protegido:
-# si el despliegue todavía no tiene opencv-python-headless en su
-# requirements.txt, la app sigue funcionando (no exige rostro, no se cae)
-# y se avisa al developer en el panel DEV para que lo agregue.
+# Detección de rostro (Nivel 1 de validación facial). Imports protegidos:
+# si el despliegue todavía no tiene las librerías en su requirements.txt,
+# la app sigue funcionando (no exige rostro, no se cae) y se avisa al
+# developer en el panel DEV para que las agregue.
+#
+# MediaPipe (Google) es el detector PRINCIPAL: mucho más confiable que
+# el método anterior (Haar Cascade de OpenCV), que daba falsos positivos
+# sobre texturas de muebles, sombras, etc. Si mediapipe no está
+# disponible, se usa OpenCV (Haar Cascade + chequeo de brillo) como
+# respaldo, para no dejar el Nivel 1 totalmente apagado.
+try:
+    import mediapipe as mp
+    MP_DISPONIBLE = True
+except Exception:
+    MP_DISPONIBLE = False
+
 try:
     import cv2
     CV2_DISPONIBLE = True
@@ -139,12 +151,14 @@ def validar_foto_captura(img_file, max_mb=8):
 
 
 _CASCADA_ROSTROS = None
+_DETECTOR_MEDIAPIPE = None
 
 
 def _cargar_cascada_rostros():
     """Carga (una sola vez, cacheada en memoria) el detector de rostros
-    de OpenCV. No identifica a nadie: solo reconoce el patrón general de
-    una cara humana (ojos, nariz, contorno)."""
+    de OpenCV (Haar Cascade). Se usa solo como respaldo si MediaPipe no
+    está disponible en este despliegue. No identifica a nadie: solo
+    reconoce el patrón general de una cara humana."""
     global _CASCADA_ROSTROS
     if _CASCADA_ROSTROS is None and CV2_DISPONIBLE:
         ruta_cascada = os.path.join(
@@ -154,35 +168,65 @@ def _cargar_cascada_rostros():
     return _CASCADA_ROSTROS
 
 
+def _cargar_detector_mediapipe():
+    """Carga (una sola vez, cacheada en memoria) el detector de rostros
+    de MediaPipe (Google). Es el detector PRINCIPAL: mucho más preciso
+    que Haar Cascade, con muchísimos menos falsos positivos sobre
+    muebles, sombras o texturas de fondo."""
+    global _DETECTOR_MEDIAPIPE
+    if _DETECTOR_MEDIAPIPE is None and MP_DISPONIBLE:
+        _DETECTOR_MEDIAPIPE = mp.solutions.face_detection.FaceDetection(
+            model_selection=1,  # rango completo: mejor para fotos de celular a distancia media/corta
+            min_detection_confidence=0.6,
+        )
+    return _DETECTOR_MEDIAPIPE
+
+
 def detectar_rostro_en_foto(img_file):
     """NIVEL 1 de validación facial: confirma que la foto capturada
     contiene al menos un rostro humano detectable. NO identifica de
     quién es la cara (eso sería el Nivel 2, reconocimiento de
-    identidad, aparte). Devuelve (hay_rostro, mensaje_de_error)."""
-    if not CV2_DISPONIBLE:
-        # Si opencv no está instalado en este despliegue (falta en
-        # requirements.txt), no se bloquea al trabajador por un problema
-        # de configuración del developer; solo se deja pasar.
+    identidad, aparte). Devuelve (hay_rostro, mensaje_de_error).
+
+    Usa MediaPipe como detector principal (mucho más confiable). Si no
+    está disponible en este despliegue, cae a OpenCV (Haar Cascade +
+    chequeo de brillo/ruido) como respaldo. Si ninguna de las dos
+    librerías está instalada, no se bloquea al trabajador por un
+    problema de configuración del developer."""
+    if not (MP_DISPONIBLE or CV2_DISPONIBLE):
         return True, ""
+
+    mensaje_no_rostro = (
+        "No se detectó un rostro claro en la foto. Asegúrate de que tu"
+        " cara se vea de frente, con buena luz, y vuelve a tomar la"
+        " foto."
+    )
+
     try:
         img_file.seek(0)
         imagen_pil = Image.open(img_file).convert("RGB")
         imagen_np = np.array(imagen_pil)
+
+        if MP_DISPONIBLE:
+            detector = _cargar_detector_mediapipe()
+            resultado = detector.process(imagen_np)
+            if not resultado.detections:
+                return False, mensaje_no_rostro
+            return True, ""
+
+        # --- Respaldo: OpenCV (Haar Cascade + brillo/ruido) ---
         imagen_gris = cv2.cvtColor(imagen_np, cv2.COLOR_RGB2GRAY)
 
-        # Filtro previo (más confiable que el detector de rostros para
-        # este caso puntual): una cámara tapada o sin luz da una imagen
-        # oscura en promedio —esto es más confiable que medir el
+        # Filtro previo: una cámara tapada o sin luz da una imagen
+        # oscura en promedio —esto es más confiable que medir solo el
         # "ruido" (desviación), porque cámaras de celular reales suben
         # el ISO automáticamente en la oscuridad y generan bastante
-        # grano, lo que puede hacer parecer una imagen tapada como si
-        # tuviera variación normal. El brillo promedio no tiene ese
-        # problema: sigue siendo bajo aunque haya ruido.
+        # grano. El brillo promedio sigue siendo bajo aunque haya ruido.
         brillo_promedio = float(imagen_gris.mean())
         desviacion_tonos = float(imagen_gris.std())
         logger.warning(
-            f"Validación de rostro — brillo={brillo_promedio:.1f},"
-            f" desviación={desviacion_tonos:.1f}"
+            f"Validación de rostro (respaldo OpenCV) — "
+            f"brillo={brillo_promedio:.1f}, desviación={desviacion_tonos:.1f}"
         )
         if brillo_promedio < 35 or desviacion_tonos < 12:
             return False, (
@@ -200,11 +244,7 @@ def detectar_rostro_en_foto(img_file):
         )
 
         if len(rostros) == 0:
-            return False, (
-                "No se detectó un rostro en la foto. Asegúrate de que tu"
-                " cara se vea clara, de frente y con buena luz, y vuelve"
-                " a tomar la foto."
-            )
+            return False, mensaje_no_rostro
         return True, ""
     except Exception as _e_silenciosa:
         logger.warning(
@@ -1704,18 +1744,26 @@ if not VISTA_TRABAJADOR_MOVIL:
 
         # Indicador de estado del Nivel 1 (detección de rostro). Solo
         # visible aquí, con el entorno DEV desbloqueado, para que el
-        # developer pueda diagnosticar si falta desplegar el
-        # requirements.txt actualizado sin tener que adivinar.
-        if CV2_DISPONIBLE:
+        # developer pueda diagnosticar sin tener que adivinar.
+        if MP_DISPONIBLE:
             st.sidebar.success(
-                "🙂 Nivel 1 (exigir rostro en la foto): ACTIVO",
+                "🙂 Nivel 1 (exigir rostro en la foto): ACTIVO"
+                " (MediaPipe — alta precisión)",
                 icon="✅",
+            )
+        elif CV2_DISPONIBLE:
+            st.sidebar.warning(
+                "🙂 Nivel 1: ACTIVO en modo respaldo (OpenCV básico)."
+                " Agrega 'mediapipe' a requirements.txt para mejor"
+                " precisión.",
+                icon="⚠️",
             )
         else:
             st.sidebar.error(
                 "🙂 Nivel 1 (exigir rostro en la foto): INACTIVO — falta"
-                " 'opencv-python-headless' en requirements.txt de este"
-                " despliegue, o falta redesplegar tras agregarlo.",
+                " 'mediapipe' (o 'opencv-python-headless') en"
+                " requirements.txt de este despliegue, o falta"
+                " redesplegar tras agregarlo.",
                 icon="🚫",
             )
 elif EMPRESA_URL and not st.session_state.empresa_id:
@@ -2455,7 +2503,11 @@ def render_modulo_empresas():
 
             with col_eb1:
                 if is_edit_emp:
-                    if st.button("💾 Guardar Empresa", use_container_width=True):
+                    if st.button(
+                        "💾 Guardar Empresa",
+                        use_container_width=True,
+                        type="primary",
+                    ):
                         datos_emp_upd = {
                             "empresa_id": emp_sel_ed,
                             "razon_social": ed_rz.strip().upper(),
@@ -2486,7 +2538,11 @@ def render_modulo_empresas():
                         st.success("Datos de la empresa guardados.")
                         st.rerun()
                 else:
-                    if st.button("➕ Crear Empresa", use_container_width=True):
+                    if st.button(
+                        "➕ Crear Empresa",
+                        use_container_width=True,
+                        type="primary",
+                    ):
                         if ed_code and ed_rz:
                             code_c = ed_code.strip().upper()
                             df_e_all = cargar_empresas()
