@@ -27,22 +27,10 @@ from openpyxl.utils import get_column_letter
 from PIL import Image
 from streamlit_js_eval import get_geolocation, streamlit_js_eval
 
-# Detección de rostro (Nivel 1 de validación facial). Imports protegidos:
-# si el despliegue todavía no tiene las librerías en su requirements.txt,
-# la app sigue funcionando (no exige rostro, no se cae) y se avisa al
-# developer en el panel DEV para que las agregue.
-#
-# MediaPipe (Google) es el detector PRINCIPAL: mucho más confiable que
-# el método anterior (Haar Cascade de OpenCV), que daba falsos positivos
-# sobre texturas de muebles, sombras, etc. Si mediapipe no está
-# disponible, se usa OpenCV (Haar Cascade + chequeo de brillo) como
-# respaldo, para no dejar el Nivel 1 totalmente apagado.
-try:
-    import mediapipe as mp
-    MP_DISPONIBLE = True
-except Exception:
-    MP_DISPONIBLE = False
-
+# Detección de rostro (Nivel 1 de validación facial). Import protegido:
+# si el despliegue todavía no tiene opencv-python-headless en su
+# requirements.txt, la app sigue funcionando (no exige rostro, no se cae)
+# y se avisa al developer en el panel DEV para que lo agregue.
 try:
     import cv2
     CV2_DISPONIBLE = True
@@ -151,14 +139,12 @@ def validar_foto_captura(img_file, max_mb=8):
 
 
 _CASCADA_ROSTROS = None
-_DETECTOR_MEDIAPIPE = None
 
 
 def _cargar_cascada_rostros():
     """Carga (una sola vez, cacheada en memoria) el detector de rostros
-    de OpenCV (Haar Cascade). Se usa solo como respaldo si MediaPipe no
-    está disponible en este despliegue. No identifica a nadie: solo
-    reconoce el patrón general de una cara humana."""
+    de OpenCV. No identifica a nadie: solo reconoce el patrón general de
+    una cara humana (ojos, nariz, contorno)."""
     global _CASCADA_ROSTROS
     if _CASCADA_ROSTROS is None and CV2_DISPONIBLE:
         ruta_cascada = os.path.join(
@@ -168,65 +154,35 @@ def _cargar_cascada_rostros():
     return _CASCADA_ROSTROS
 
 
-def _cargar_detector_mediapipe():
-    """Carga (una sola vez, cacheada en memoria) el detector de rostros
-    de MediaPipe (Google). Es el detector PRINCIPAL: mucho más preciso
-    que Haar Cascade, con muchísimos menos falsos positivos sobre
-    muebles, sombras o texturas de fondo."""
-    global _DETECTOR_MEDIAPIPE
-    if _DETECTOR_MEDIAPIPE is None and MP_DISPONIBLE:
-        _DETECTOR_MEDIAPIPE = mp.solutions.face_detection.FaceDetection(
-            model_selection=1,  # rango completo: mejor para fotos de celular a distancia media/corta
-            min_detection_confidence=0.6,
-        )
-    return _DETECTOR_MEDIAPIPE
-
-
 def detectar_rostro_en_foto(img_file):
     """NIVEL 1 de validación facial: confirma que la foto capturada
     contiene al menos un rostro humano detectable. NO identifica de
     quién es la cara (eso sería el Nivel 2, reconocimiento de
-    identidad, aparte). Devuelve (hay_rostro, mensaje_de_error).
-
-    Usa MediaPipe como detector principal (mucho más confiable). Si no
-    está disponible en este despliegue, cae a OpenCV (Haar Cascade +
-    chequeo de brillo/ruido) como respaldo. Si ninguna de las dos
-    librerías está instalada, no se bloquea al trabajador por un
-    problema de configuración del developer."""
-    if not (MP_DISPONIBLE or CV2_DISPONIBLE):
+    identidad, aparte). Devuelve (hay_rostro, mensaje_de_error)."""
+    if not CV2_DISPONIBLE:
+        # Si opencv no está instalado en este despliegue (falta en
+        # requirements.txt), no se bloquea al trabajador por un problema
+        # de configuración del developer; solo se deja pasar.
         return True, ""
-
-    mensaje_no_rostro = (
-        "No se detectó un rostro claro en la foto. Asegúrate de que tu"
-        " cara se vea de frente, con buena luz, y vuelve a tomar la"
-        " foto."
-    )
-
     try:
         img_file.seek(0)
         imagen_pil = Image.open(img_file).convert("RGB")
         imagen_np = np.array(imagen_pil)
-
-        if MP_DISPONIBLE:
-            detector = _cargar_detector_mediapipe()
-            resultado = detector.process(imagen_np)
-            if not resultado.detections:
-                return False, mensaje_no_rostro
-            return True, ""
-
-        # --- Respaldo: OpenCV (Haar Cascade + brillo/ruido) ---
         imagen_gris = cv2.cvtColor(imagen_np, cv2.COLOR_RGB2GRAY)
 
-        # Filtro previo: una cámara tapada o sin luz da una imagen
-        # oscura en promedio —esto es más confiable que medir solo el
+        # Filtro previo (más confiable que el detector de rostros para
+        # este caso puntual): una cámara tapada o sin luz da una imagen
+        # oscura en promedio —esto es más confiable que medir el
         # "ruido" (desviación), porque cámaras de celular reales suben
         # el ISO automáticamente en la oscuridad y generan bastante
-        # grano. El brillo promedio sigue siendo bajo aunque haya ruido.
+        # grano, lo que puede hacer parecer una imagen tapada como si
+        # tuviera variación normal. El brillo promedio no tiene ese
+        # problema: sigue siendo bajo aunque haya ruido.
         brillo_promedio = float(imagen_gris.mean())
         desviacion_tonos = float(imagen_gris.std())
         logger.warning(
-            f"Validación de rostro (respaldo OpenCV) — "
-            f"brillo={brillo_promedio:.1f}, desviación={desviacion_tonos:.1f}"
+            f"Validación de rostro — brillo={brillo_promedio:.1f},"
+            f" desviación={desviacion_tonos:.1f}"
         )
         if brillo_promedio < 35 or desviacion_tonos < 12:
             return False, (
@@ -244,7 +200,11 @@ def detectar_rostro_en_foto(img_file):
         )
 
         if len(rostros) == 0:
-            return False, mensaje_no_rostro
+            return False, (
+                "No se detectó un rostro en la foto. Asegúrate de que tu"
+                " cara se vea clara, de frente y con buena luz, y vuelve"
+                " a tomar la foto."
+            )
         return True, ""
     except Exception as _e_silenciosa:
         logger.warning(
@@ -331,18 +291,166 @@ def clave_coincide(valor_ingresado, valor_guardado):
     return str(valor_ingresado) == valor_guardado
 
 
+def render_html(html):
+    """Renderiza HTML/CSS crudo con st.markdown de forma segura.
+
+    BUG QUE ESTO EVITA: st.markdown() primero pasa el texto por un
+    parser de Markdown antes de mostrarlo. Ese parser trata cualquier
+    línea que empiece con 4 o más espacios como un BLOQUE DE CÓDIGO
+    literal (la muestra tal cual, escapada, en vez de interpretarla
+    como HTML) — esto rompía la animación de globos (se veía como
+    texto plano en pantalla) y, sin este arreglo, también rompía el
+    tema visual completo (fondo animado, CSS, header), porque el
+    código Python de esos bloques queda naturalmente indentado. La
+    solución es quitarle la sangría a cada línea antes de mandarla a
+    render, ya que a HTML no le importa la sangría."""
+    lineas_sin_sangria = "\n".join(
+        linea.strip() for linea in html.splitlines()
+    )
+    st.markdown(lineas_sin_sangria, unsafe_allow_html=True)
+
+
+def es_consentimiento_valido(valor):
+    """Interpreta el valor guardado de 'consentimiento_aceptado', que
+    puede venir como bool real (desde Supabase) o como texto (desde el
+    CSV local: 'True'/'False', '1'/'0', vacío, etc.)."""
+    if isinstance(valor, bool):
+        return valor
+    if pd.isna(valor):
+        return False
+    return str(valor).strip().lower() in ("true", "1", "1.0", "si", "sí")
+
+
+TEXTO_POLITICA_PRIVACIDAD = """
+**Aviso de Privacidad y Consentimiento Informado**
+
+Para verificar tu asistencia, esta aplicación registra, en el momento
+en que confirmas cada marcación de Entrada o Salida:
+
+- Una **fotografía** tuya, tomada con la cámara de tu dispositivo.
+- Tu **ubicación GPS** en ese instante, para confirmar que te
+  encuentras dentro del rango de tu sede de trabajo.
+- La **fecha y hora** exacta del registro.
+
+**Finalidad:** estos datos se usan ÚNICA Y EXCLUSIVAMENTE para
+verificar tu asistencia laboral (entrada/salida, cumplimiento de
+horario). No se usan para ningún otro fin, ni se comparten con
+terceros ajenos a tu empleador.
+
+**Conservación:** los registros se conservan mientras dure la relación
+laboral y por el plazo que exija la normativa laboral aplicable,
+después de lo cual se eliminan.
+
+**Tus derechos:** en cualquier momento puedes solicitar a tu empleador
+el acceso, rectificación, cancelación u oposición (derechos ARCO)
+sobre tus datos personales, conforme a la Ley N° 29733, Ley de
+Protección de Datos Personales, y su Reglamento.
+
+Al marcar la casilla de abajo, declaras haber leído este aviso y
+otorgas tu consentimiento expreso para el tratamiento de tu foto y tu
+ubicación GPS con la única finalidad descrita.
+"""
+
+
+def render_gate_consentimiento(supabase, datos_emp):
+    """Muestra la pantalla de consentimiento informado (Ley 29733) la
+    primera vez que un trabajador entra a marcar, y NO deja continuar
+    hasta que acepte explícitamente. Devuelve True si el trabajador ya
+    puede seguir (ya aceptó, ahora o antes)."""
+    if es_consentimiento_valido(
+        datos_emp.get("consentimiento_aceptado", False)
+    ):
+        return True
+
+    with st.container(border=True):
+        st.markdown("### 📄 Antes de continuar")
+        st.markdown(TEXTO_POLITICA_PRIVACIDAD)
+
+        acepto = st.checkbox(
+            "He leído el aviso y ACEPTO el uso de mi foto y mi ubicación"
+            " GPS únicamente para verificar mi asistencia."
+        )
+
+        col_c1, col_c2 = st.columns(2)
+        with col_c1:
+            if st.button(
+                "✅ Aceptar y continuar",
+                type="primary",
+                disabled=not acepto,
+                use_container_width=True,
+            ):
+                fecha_consentimiento = ahora_peru().strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+                datos_consentimiento = {
+                    "empresa_id": st.session_state.empresa_id,
+                    "dni": str(datos_emp["dni"]),
+                    "consentimiento_aceptado": True,
+                    "consentimiento_fecha": fecha_consentimiento,
+                }
+                if supabase:
+                    try:
+                        guardar_empleado_supabase(
+                            supabase, datos_consentimiento
+                        )
+                    except Exception as e:
+                        st.warning(
+                            "No se pudo guardar el consentimiento en la"
+                            f" nube ({e}). Se guardó solo local; se"
+                            " volverá a pedir en el próximo"
+                            " redespliegue."
+                        )
+
+                if os.path.exists(CSV_EMPLEADOS):
+                    with bloqueo_csv(CSV_EMPLEADOS):
+                        df_emp_full = pd.read_csv(CSV_EMPLEADOS)
+                        df_emp_full["dni"] = df_emp_full["dni"].astype(str)
+                        idx_c = df_emp_full[
+                            (
+                                df_emp_full["empresa_id"].astype(str)
+                                == str(st.session_state.empresa_id)
+                            )
+                            & (
+                                df_emp_full["dni"]
+                                == str(datos_emp["dni"])
+                            )
+                        ].index
+                        if len(idx_c) > 0:
+                            df_emp_full.at[
+                                idx_c[0], "consentimiento_aceptado"
+                            ] = True
+                            df_emp_full.at[
+                                idx_c[0], "consentimiento_fecha"
+                            ] = fecha_consentimiento
+                            df_emp_full.to_csv(CSV_EMPLEADOS, index=False)
+
+                emp_actualizado = dict(datos_emp)
+                emp_actualizado["consentimiento_aceptado"] = True
+                emp_actualizado["consentimiento_fecha"] = (
+                    fecha_consentimiento
+                )
+                st.session_state.emp_datos = pd.Series(emp_actualizado)
+                st.rerun()
+        with col_c2:
+            if st.button("🔒 No acepto / Salir", use_container_width=True):
+                st.session_state.emp_login_ok = False
+                st.session_state.emp_datos = None
+                st.rerun()
+
+    return False
+
+
 st.set_page_config(
     page_title="Sistema de Asistencia y Nómina SaaS Multi-Empresa",
     layout="wide",
     page_icon="⏰",
 )
 
-st.markdown(
+render_html(
     """
     <link rel="icon" href="/app/static/icon-192.png">
     <link rel="apple-touch-icon" href="/app/static/icon-192.png">
-    """,
-    unsafe_allow_html=True,
+    """
 )
 
 # --- MODO MÓVIL / TRABAJADOR (vista simplificada, solo marcación) ---
@@ -376,7 +484,7 @@ VISTA_TRABAJADOR_MOVIL = ES_CELULAR and not st.session_state.get(
 )
 
 if VISTA_TRABAJADOR_MOVIL:
-    st.markdown(
+    render_html(
         """
         <link rel="manifest" href="/app/static/manifest.json">
         <meta name="theme-color" content="#111319">
@@ -394,8 +502,7 @@ if VISTA_TRABAJADOR_MOVIL:
             navigator.serviceWorker.register('/app/static/service-worker.js');
         }
         </script>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
 # ---------------------------------------------------------
@@ -405,7 +512,7 @@ if VISTA_TRABAJADOR_MOVIL:
 # Reutiliza los mismos st.button/st.text_input/st.selectbox/etc. de
 # siempre, solo les cambia la piel. El fondo animado va en una capa fija
 # detrás de todo (z-index -1) para no interferir con los clics.
-st.markdown(
+render_html(
     """
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Space+Mono:wght@400;700&display=swap');
@@ -566,8 +673,7 @@ st.markdown(
         <div class="fac-grid-overlay"></div>
         <div class="fac-scanline"></div>
     </div>
-    """,
-    unsafe_allow_html=True,
+    """
 )
 
 
@@ -1525,6 +1631,8 @@ def cargar_datos(empresa_id):
             "password",
             "horario_personalizado",
             "fecha_ingreso",
+            "consentimiento_aceptado",
+            "consentimiento_fecha",
         ]
         if registros_empleados:
             df_empleados = pd.DataFrame(registros_empleados)
@@ -1554,6 +1662,20 @@ def cargar_datos(empresa_id):
         df_empleados["fecha_ingreso"] = df_empleados["fecha_ingreso"].fillna(
             hoy_peru().strftime("%Y-%m-%d")
         )
+        # Consentimiento informado (Ley 29733) — trabajadores que ya
+        # existían antes de este cambio quedan con "no aceptado" por
+        # defecto, así se les pide una sola vez la próxima vez que
+        # entren a marcar.
+        if "consentimiento_aceptado" not in df_empleados.columns:
+            df_empleados["consentimiento_aceptado"] = False
+        df_empleados["consentimiento_aceptado"] = df_empleados[
+            "consentimiento_aceptado"
+        ].fillna(False)
+        if "consentimiento_fecha" not in df_empleados.columns:
+            df_empleados["consentimiento_fecha"] = ""
+        df_empleados["consentimiento_fecha"] = df_empleados[
+            "consentimiento_fecha"
+        ].fillna("")
         # Se guarda también una copia local, solo como caché/respaldo por
         # si más tarde Supabase no responde (modo offline de emergencia).
         # Se hace un "merge" con lo que ya había en el CSV para no perder
@@ -1606,6 +1728,10 @@ def cargar_datos(empresa_id):
                 df_empleados["horario_personalizado"] = "{}"
             if "fecha_ingreso" not in df_empleados.columns:
                 df_empleados["fecha_ingreso"] = "2026-01-01"
+            if "consentimiento_aceptado" not in df_empleados.columns:
+                df_empleados["consentimiento_aceptado"] = False
+            if "consentimiento_fecha" not in df_empleados.columns:
+                df_empleados["consentimiento_fecha"] = ""
             df_empleados.to_csv(CSV_EMPLEADOS, index=False)
     else:
         marcar_estado_modo_local("empleados", True)
@@ -1627,6 +1753,8 @@ def cargar_datos(empresa_id):
             "password": [PASSWORD_EMPLEADO_DEFAULT, PASSWORD_EMPLEADO_DEFAULT],
             "horario_personalizado": ["{}", "{}"],
             "fecha_ingreso": ["2026-01-01", "2026-01-01"],
+            "consentimiento_aceptado": [False, False],
+            "consentimiento_fecha": ["", ""],
         })
         with bloqueo_csv(CSV_EMPLEADOS):
             df_empleados.to_csv(CSV_EMPLEADOS, index=False)
@@ -1744,26 +1872,18 @@ if not VISTA_TRABAJADOR_MOVIL:
 
         # Indicador de estado del Nivel 1 (detección de rostro). Solo
         # visible aquí, con el entorno DEV desbloqueado, para que el
-        # developer pueda diagnosticar sin tener que adivinar.
-        if MP_DISPONIBLE:
+        # developer pueda diagnosticar si falta desplegar el
+        # requirements.txt actualizado sin tener que adivinar.
+        if CV2_DISPONIBLE:
             st.sidebar.success(
-                "🙂 Nivel 1 (exigir rostro en la foto): ACTIVO"
-                " (MediaPipe — alta precisión)",
+                "🙂 Nivel 1 (exigir rostro en la foto): ACTIVO",
                 icon="✅",
-            )
-        elif CV2_DISPONIBLE:
-            st.sidebar.warning(
-                "🙂 Nivel 1: ACTIVO en modo respaldo (OpenCV básico)."
-                " Agrega 'mediapipe' a requirements.txt para mejor"
-                " precisión.",
-                icon="⚠️",
             )
         else:
             st.sidebar.error(
                 "🙂 Nivel 1 (exigir rostro en la foto): INACTIVO — falta"
-                " 'mediapipe' (o 'opencv-python-headless') en"
-                " requirements.txt de este despliegue, o falta"
-                " redesplegar tras agregarlo.",
+                " 'opencv-python-headless' en requirements.txt de este"
+                " despliegue, o falta redesplegar tras agregarlo.",
                 icon="🚫",
             )
 elif EMPRESA_URL and not st.session_state.empresa_id:
@@ -2503,11 +2623,7 @@ def render_modulo_empresas():
 
             with col_eb1:
                 if is_edit_emp:
-                    if st.button(
-                        "💾 Guardar Empresa",
-                        use_container_width=True,
-                        type="primary",
-                    ):
+                    if st.button("💾 Guardar Empresa", use_container_width=True):
                         datos_emp_upd = {
                             "empresa_id": emp_sel_ed,
                             "razon_social": ed_rz.strip().upper(),
@@ -2538,11 +2654,7 @@ def render_modulo_empresas():
                         st.success("Datos de la empresa guardados.")
                         st.rerun()
                 else:
-                    if st.button(
-                        "➕ Crear Empresa",
-                        use_container_width=True,
-                        type="primary",
-                    ):
+                    if st.button("➕ Crear Empresa", use_container_width=True):
                         if ed_code and ed_rz:
                             code_c = ed_code.strip().upper()
                             df_e_all = cargar_empresas()
@@ -2605,13 +2717,12 @@ def render_modulo_empresas():
 # ---------------------------------------------------------
 
 if st.session_state.emp_login_ok and not st.session_state.autenticado:
-    st.markdown(
+    render_html(
         """
         <style>
             [data-testid="stSidebar"] {display: none;}
         </style>
-    """,
-        unsafe_allow_html=True,
+        """
     )
 
 if st.session_state.entorno == "DEV" and not VISTA_TRABAJADOR_MOVIL:
@@ -2636,7 +2747,7 @@ else:
         st.rerun()
 
 if opcion == "⏰ Marcar Asistencia":
-    st.markdown(
+    render_html(
         f"""
         <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
             <div style="display:flex; align-items:center; gap:10px;">
@@ -2662,8 +2773,7 @@ if opcion == "⏰ Marcar Asistencia":
                 </div>
             </div>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
     hoy = hoy_peru()
 
@@ -2803,6 +2913,12 @@ if opcion == "⏰ Marcar Asistencia":
     else:
         datos_emp = st.session_state.emp_datos
 
+        # Consentimiento informado (Ley 29733) — bloquea el acceso a la
+        # marcación hasta que el trabajador acepte explícitamente, una
+        # sola vez.
+        if not render_gate_consentimiento(supabase, datos_emp):
+            st.stop()
+
         col_top1, col_top2 = st.columns([3, 1])
         with col_top1:
             st.success(
@@ -2865,7 +2981,13 @@ if opcion == "⏰ Marcar Asistencia":
 
         st.divider()
 
-        location = get_geolocation()
+        # PRIVACIDAD — GPS: ya no se pide la ubicación apenas se abre la
+        # pantalla (antes se pedía sí o sí, incluso si el trabajador solo
+        # estaba mirando, sin intención real de marcar). Ahora solo se
+        # solicita una vez que el trabajador ya tomó su foto — la señal
+        # clara de que está a punto de confirmar su marcación — y el
+        # valor no se usa para nada más que esa validación puntual.
+        location = None
 
         col1, col2 = st.columns(2)
 
@@ -3168,16 +3290,9 @@ if opcion == "⏰ Marcar Asistencia":
                 }
                 </style>
                 """
-                # FIX: Markdown trata cualquier línea con 4+ espacios de
-                # indentación como bloque de código literal (no la renderiza
-                # como HTML). Como este bloque se arma dentro de varios
-                # for/if anidados, cada línea queda indentada por Python.
-                # Quitamos la indentación de cada línea antes de enviarlo a
-                # st.markdown para que se interprete como HTML real.
-                _html_globos = "\n".join(
-                    _linea.strip() for _linea in _html_globos.splitlines()
-                )
-                st.markdown(_html_globos, unsafe_allow_html=True)
+                # render_html() ya le quita la indentación de cada línea
+                # antes de mostrarla como HTML real (ver su docstring).
+                render_html(_html_globos)
 
 elif opcion == "🔐 Panel de Gestión / Admin":
     if not st.session_state.autenticado:
