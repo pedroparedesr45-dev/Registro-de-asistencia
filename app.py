@@ -2988,22 +2988,34 @@ if opcion == "⏰ Marcar Asistencia":
         # clara de que está a punto de confirmar su marcación — y el
         # valor no se usa para nada más que esa validación puntual.
         #
-        # NOTA TÉCNICA: la foto se toma en la columna 2 (más abajo en el
-        # código), pero esta columna 1 la necesita ANTES para decidir si
-        # ya puede pedir el GPS. Por eso el camera_input tiene una 'key'
-        # fija: así se puede leer su valor ya guardado en session_state
-        # desde aquí arriba, sin tener que cambiar dónde se ve en
-        # pantalla (sigue apareciendo en la columna 2, igual que antes).
-        foto_ya_tomada = (
-            st.session_state.get("foto_marcacion_camera") is not None
-        )
+        # NOTA TÉCNICA: la columna 1 (izquierda) necesita saber si ya
+        # hay foto para decidir si pide el GPS, así que el widget de la
+        # cámara se crea primero (aunque su contenido completo, como el
+        # botón de confirmar, se sigue mostrando en la columna 2 a la
+        # derecha, exactamente en el mismo lugar de siempre). Antes se
+        # "espiaba" el valor de la foto desde session_state ANTES de
+        # crear el widget — eso confundía al componente de la cámara y
+        # dejaba la vista previa en blanco. Ahora se captura la foto de
+        # forma normal y directa, una sola vez.
+        col1, col2 = st.columns(2)
+
+        with col2:
+            st.markdown("### 2. Foto Obligatoria")
+            img_file = st.camera_input(
+                "Toma una foto para confirmar tu identidad"
+            )
+            st.caption(
+                "📸 La foto debe mostrar un rostro claro y de frente; si"
+                " no se detecta una cara, no se podrá confirmar la"
+                " marcación."
+            )
+
+        foto_ya_tomada = img_file is not None
 
         if foto_ya_tomada:
             # Se pide UNA sola vez por foto (se guarda en cache en
-            # session_state). Volver a llamar a get_geolocation() en
-            # cada recarga generaba idas y vueltas extra con el
-            # navegador que hacían que la vista previa de la cámara
-            # parpadeara o se viera en blanco.
+            # session_state), para no generar idas y vueltas de más con
+            # el navegador en cada recarga.
             if not st.session_state.get("ubicacion_marcacion_lista"):
                 _ubicacion_temp = get_geolocation()
                 if _ubicacion_temp is not None:
@@ -3019,8 +3031,6 @@ if opcion == "⏰ Marcar Asistencia":
             location = None
             st.session_state.ubicacion_marcacion_lista = False
             st.session_state.pop("ubicacion_marcacion_actual", None)
-
-        col1, col2 = st.columns(2)
 
         with col1:
             st.markdown("### 1. Identificación y Ubicación")
@@ -3103,17 +3113,6 @@ if opcion == "⏰ Marcar Asistencia":
                     )
 
         with col2:
-            st.markdown("### 2. Foto Obligatoria")
-            img_file = st.camera_input(
-                "Toma una foto para confirmar tu identidad",
-                key="foto_marcacion_camera",
-            )
-            st.caption(
-                "📸 La foto debe mostrar un rostro claro y de frente; si"
-                " no se detecta una cara, no se podrá confirmar la"
-                " marcación."
-            )
-
             btn_disabled = not en_rango or img_file is None or ya_marcado
 
             if not en_rango and location:
