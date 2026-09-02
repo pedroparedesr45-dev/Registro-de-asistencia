@@ -833,8 +833,6 @@ if "pin_visor" not in st.session_state:
     st.session_state.pin_visor = st.secrets.get("PIN_VISOR", "5678")
 if "pin_master" not in st.session_state:
     st.session_state.pin_master = st.secrets.get("PIN_MASTER", "9999")
-if "clave_excel" not in st.session_state:
-    st.session_state.clave_excel = st.secrets.get("CLAVE_EXCEL", "admin123")
 if "fecha_inicio_sistema" not in st.session_state:
     st.session_state.fecha_inicio_sistema = date(2026, 1, 1)
 
@@ -1374,8 +1372,6 @@ def cargar_configuracion_sistema(supabase, empresa_id):
                 st.session_state.pin_visor = cfg["pin_visor"]
             if cfg.get("pin_master"):
                 st.session_state.pin_master = cfg["pin_master"]
-            if cfg.get("clave_excel"):
-                st.session_state.clave_excel = cfg["clave_excel"]
     except Exception:
         pass  # si falla, se sigue usando lo que ya había cargado
 
@@ -2115,9 +2111,7 @@ def render_custom_table(lista_registros):
     return "".join(html_lines)
 
 
-def generar_excel_completo(
-    df_asistencia, df_empleados, mes_sel, anio_sel, clave_excel
-):
+def generar_excel_completo(df_asistencia, df_empleados, mes_sel, anio_sel):
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
 
@@ -2331,9 +2325,6 @@ def generar_excel_completo(
             ws_emp.column_dimensions[get_column_letter(col[0].column)].width = (
                 max(max_len + 3, 13)
             )
-
-        ws_emp.protection.sheet = True
-        ws_emp.protection.set_password(clave_excel)
 
     output = io.BytesIO()
     wb.save(output)
@@ -3508,7 +3499,6 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 df_empleados,
                                 mes_sel,
                                 anio_sel,
-                                st.session_state.clave_excel,
                             )
                         st.download_button(
                             label="💾 Confirmar Descarga de Excel",
@@ -5202,13 +5192,6 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 " para quien ingresa con esa clave."
                             )
 
-                        c_excel = st.text_input(
-                            "Nueva Clave de Protección Excel (déjala en blanco"
-                            " para no cambiarla):",
-                            value="",
-                            type="password",
-                        )
-
                         if st.button("Guardar Nuevas Claves", type="primary"):
                             campos_a_guardar = {}
                             if p_admin:
@@ -5223,12 +5206,6 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 campos_a_guardar["pin_master"] = _hash_clave(
                                     p_master
                                 )
-                            if c_excel:
-                                # La clave de Excel se guarda tal cual (texto
-                                # plano) porque openpyxl necesita el valor
-                                # real para proteger la hoja de cálculo; no
-                                # es una clave de login como las demás.
-                                campos_a_guardar["clave_excel"] = c_excel
 
                             if not campos_a_guardar:
                                 st.info(
