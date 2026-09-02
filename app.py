@@ -2997,7 +2997,28 @@ if opcion == "⏰ Marcar Asistencia":
         foto_ya_tomada = (
             st.session_state.get("foto_marcacion_camera") is not None
         )
-        location = get_geolocation() if foto_ya_tomada else None
+
+        if foto_ya_tomada:
+            # Se pide UNA sola vez por foto (se guarda en cache en
+            # session_state). Volver a llamar a get_geolocation() en
+            # cada recarga generaba idas y vueltas extra con el
+            # navegador que hacían que la vista previa de la cámara
+            # parpadeara o se viera en blanco.
+            if not st.session_state.get("ubicacion_marcacion_lista"):
+                _ubicacion_temp = get_geolocation()
+                if _ubicacion_temp is not None:
+                    st.session_state.ubicacion_marcacion_actual = (
+                        _ubicacion_temp
+                    )
+                    st.session_state.ubicacion_marcacion_lista = True
+            location = st.session_state.get("ubicacion_marcacion_actual")
+        else:
+            # Sin foto (o se le dio "Clear photo"): se limpia la
+            # ubicación en cache, para que la próxima foto pida una
+            # ubicación fresca, no una vieja.
+            location = None
+            st.session_state.ubicacion_marcacion_lista = False
+            st.session_state.pop("ubicacion_marcacion_actual", None)
 
         col1, col2 = st.columns(2)
 
