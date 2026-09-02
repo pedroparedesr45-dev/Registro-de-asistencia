@@ -62,7 +62,20 @@ PASSWORD_EMPLEADO_DEFAULT = st.secrets.get("PASSWORD_EMPLEADO_DEFAULT", "123456"
 def init_supabase() -> Client:
     try:
         url = st.secrets["SUPABASE_URL"]
-        key = st.secrets["SUPABASE_KEY"]
+        # Fase 3 del plan de cumplimiento legal: se usa la
+        # SERVICE_ROLE_KEY (que ignora RLS) en vez de la anon key para
+        # todas las operaciones del backend. En Supabase se retiran los
+        # permisos del rol "anon" (sección 5 del informe de
+        # cumplimiento) — así, aunque alguien consiguiera la anon key,
+        # no podría leer ni escribir nada en ninguna tabla.
+        #
+        # Compatible con instalaciones que todavía no agregaron la
+        # nueva Secret: si SUPABASE_SERVICE_ROLE_KEY no está
+        # configurada, sigue funcionando con la anon key de siempre
+        # (modo anterior a esta fase), para no romper nada de golpe.
+        key = st.secrets.get("SUPABASE_SERVICE_ROLE_KEY") or st.secrets[
+            "SUPABASE_KEY"
+        ]
         return create_client(url, key)
     except Exception as e:
         st.warning("⚠️ No se pudo conectar a la Nube (Supabase). Trabajando en modo 100% Local.")
