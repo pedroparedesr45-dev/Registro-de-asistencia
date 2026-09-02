@@ -612,10 +612,12 @@ render_html(
     }
 
     /* Tarjetas / contenedores con borde (st.container(border=True)) */
+    /* NOTA: sin backdrop-filter a propósito — el "vidrio esmerilado"
+       causaba un bug de renderizado en navegadores basados en Chromium
+       (Chrome/Brave/Edge) que dejaba en blanco la vista previa de fotos
+       cargadas dinámicamente adentro, como en st.camera_input(). */
     [data-testid="stVerticalBlockBorderWrapper"]{
-        background:var(--bg-panel) !important;
-        backdrop-filter:blur(18px);
-        -webkit-backdrop-filter:blur(18px);
+        background:var(--bg-panel-solid) !important;
         border:1px solid var(--border) !important;
         border-radius:22px !important;
     }
@@ -633,7 +635,6 @@ render_html(
        redondea y se le da aire "glass" sin tocar el color de fondo. */
     [data-testid="stAlert"]{
         border-radius:14px !important;
-        backdrop-filter:blur(6px);
     }
 
     /* Expanders */
@@ -681,9 +682,7 @@ st.markdown(
     """
 <style>
     .bitacora-container {
-        background: var(--bg-panel, #111319);
-        backdrop-filter: blur(18px);
-        -webkit-backdrop-filter: blur(18px);
+        background: var(--bg-panel-solid, #111319);
         border-radius: 20px;
         padding: 18px;
         border: 1px solid var(--border, #232733);
