@@ -2987,7 +2987,17 @@ if opcion == "⏰ Marcar Asistencia":
         # solicita una vez que el trabajador ya tomó su foto — la señal
         # clara de que está a punto de confirmar su marcación — y el
         # valor no se usa para nada más que esa validación puntual.
-        location = None
+        #
+        # NOTA TÉCNICA: la foto se toma en la columna 2 (más abajo en el
+        # código), pero esta columna 1 la necesita ANTES para decidir si
+        # ya puede pedir el GPS. Por eso el camera_input tiene una 'key'
+        # fija: así se puede leer su valor ya guardado en session_state
+        # desde aquí arriba, sin tener que cambiar dónde se ve en
+        # pantalla (sigue apareciendo en la columna 2, igual que antes).
+        foto_ya_tomada = (
+            st.session_state.get("foto_marcacion_camera") is not None
+        )
+        location = get_geolocation() if foto_ya_tomada else None
 
         col1, col2 = st.columns(2)
 
@@ -3058,16 +3068,24 @@ if opcion == "⏰ Marcar Asistencia":
                         f" - Máx: {rango_permitido}m)."
                     )
             else:
-                st.warning(
-                    "📍 Obteniendo ubicación GPS real del navegador... Por"
-                    " favor, permite el acceso a tu ubicación si el navegador"
-                    " lo solicita."
-                )
+                if foto_ya_tomada:
+                    st.warning(
+                        "📍 Obteniendo ubicación GPS real del navegador..."
+                        " Por favor, permite el acceso a tu ubicación si"
+                        " el navegador lo solicita."
+                    )
+                else:
+                    st.info(
+                        "📸 Toma tu foto en el panel de la derecha para"
+                        " que se solicite tu ubicación GPS y podamos"
+                        " validar que estás dentro del rango permitido."
+                    )
 
         with col2:
             st.markdown("### 2. Foto Obligatoria")
             img_file = st.camera_input(
-                "Toma una foto para confirmar tu identidad"
+                "Toma una foto para confirmar tu identidad",
+                key="foto_marcacion_camera",
             )
             st.caption(
                 "📸 La foto debe mostrar un rostro claro y de frente; si"
