@@ -2374,11 +2374,25 @@ def generar_excel_completo(df_asistencia, df_empleados, mes_sel, anio_sel):
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
 
+    # --- Paleta "de marca" (coherente con los colores de la app) ---
     fill_navy = PatternFill(
+        start_color="16213E", end_color="16213E", fill_type="solid"
+    )
+    fill_acento = PatternFill(
         start_color="1F4E78", end_color="1F4E78", fill_type="solid"
     )
+    fill_zebra = PatternFill(
+        start_color="F2F6FB", end_color="F2F6FB", fill_type="solid"
+    )
+    fill_total = PatternFill(
+        start_color="E8EEF7", end_color="E8EEF7", fill_type="solid"
+    )
     font_header = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
-    font_title = Font(name="Calibri", size=14, bold=True, color="1F4E78")
+    font_title = Font(name="Calibri", size=16, bold=True, color="16213E")
+    font_subtitle = Font(
+        name="Calibri", size=10, italic=True, color="6C7A92"
+    )
+    font_total = Font(name="Calibri", size=10.5, bold=True, color="16213E")
 
     fill_rojo = PatternFill(
         start_color="FF4D4D", end_color="FF4D4D", fill_type="solid"
@@ -2397,13 +2411,29 @@ def generar_excel_completo(df_asistencia, df_empleados, mes_sel, anio_sel):
         top=Side(style="thin", color="D9D9D9"),
         bottom=Side(style="thin", color="D9D9D9"),
     )
+    borde_grueso_abajo = Border(bottom=Side(style="medium", color="16213E"))
 
     prefix_periodo = f"{anio_sel}-{mes_sel:02d}"
+    fecha_generacion = ahora_peru().strftime("%d/%m/%Y %H:%M")
 
     ws_gen = wb.create_sheet(title="Resumen General")
-    ws_gen.append(["REPORTE CONSOLIDADO DE ASISTENCIA Y AUDITORÍA GPS"])
-    ws_gen.cell(row=1, column=1).font = font_title
-    ws_gen.append([f"Período Evaluado: {MESES_NOMBRES[mes_sel]} {anio_sel}"])
+    ws_gen.sheet_view.showGridLines = False
+    ws_gen.sheet_properties.tabColor = "16213E"
+
+    ws_gen.merge_cells("A1:H1")
+    ws_gen["A1"] = "REPORTE CONSOLIDADO DE ASISTENCIA Y AUDITORÍA GPS"
+    ws_gen["A1"].font = font_title
+    ws_gen.row_dimensions[1].height = 26
+
+    ws_gen.merge_cells("A2:H2")
+    ws_gen["A2"] = (
+        f"Empresa: {st.session_state.empresa_id}   |   Período:"
+        f" {MESES_NOMBRES[mes_sel]} {anio_sel}   |   Generado el"
+        f" {fecha_generacion}"
+    )
+    ws_gen["A2"].font = font_subtitle
+    for col in range(1, 9):
+        ws_gen.cell(row=3, column=col).border = borde_grueso_abajo
     ws_gen.append([])
 
     headers_gen = [
@@ -2416,16 +2446,20 @@ def generar_excel_completo(df_asistencia, df_empleados, mes_sel, anio_sel):
         "Horas Tardanza",
         "Minutos Extra",
     ]
+    fila_headers_gen = 4
     ws_gen.append(headers_gen)
     for col_idx in range(1, len(headers_gen) + 1):
-        c = ws_gen.cell(row=4, column=col_idx)
+        c = ws_gen.cell(row=fila_headers_gen, column=col_idx)
         c.fill, c.font, c.alignment = (
             fill_navy,
             font_header,
             Alignment(horizontal="center", vertical="center"),
         )
+    ws_gen.row_dimensions[fila_headers_gen].height = 20
+    ws_gen.freeze_panes = f"A{fila_headers_gen + 1}"
 
     row_pos = 5
+    tot_puntuales = tot_tardanzas = tot_hrs_tard = tot_min_extra = 0
     for _, emp in df_empleados.iterrows():
         emp_asist = df_asistencia[(df_asistencia["Empleado"] == emp["nombre"])]
         emp_asist_mes = (
@@ -2462,6 +2496,10 @@ def generar_excel_completo(df_asistencia, df_empleados, mes_sel, anio_sel):
         )
 
         hrs_tard = round(min_tard / 60.0, 2)
+        tot_puntuales += puntuales
+        tot_tardanzas += tardanzas
+        tot_hrs_tard += hrs_tard
+        tot_min_extra += min_extra
 
         ws_gen.append([
             emp["dni"],
@@ -2473,24 +2511,64 @@ def generar_excel_completo(df_asistencia, df_empleados, mes_sel, anio_sel):
             hrs_tard,
             min_extra,
         ])
+        es_par = (row_pos - fila_headers_gen) % 2 == 0
         for c_i in range(1, len(headers_gen) + 1):
             cell = ws_gen.cell(row=row_pos, column=c_i)
             cell.border = border_thin
             cell.alignment = Alignment(
                 horizontal="center" if c_i != 2 else "left", vertical="center"
             )
+            if es_par:
+                cell.fill = fill_zebra
         row_pos += 1
+
+    # Fila de totales, al pie de la tabla resumen.
+    ws_gen.append([
+        "", "TOTAL EMPRESA", "", "",
+        tot_puntuales, tot_tardanzas, round(tot_hrs_tard, 2), tot_min_extra,
+    ])
+    for c_i in range(1, len(headers_gen) + 1):
+        cell = ws_gen.cell(row=row_pos, column=c_i)
+        cell.font = font_total
+        cell.fill = fill_total
+        cell.border = Border(top=Side(style="medium", color="16213E"))
+        cell.alignment = Alignment(
+            horizontal="center" if c_i != 2 else "left", vertical="center"
+        )
+
+    ws_gen.auto_filter.ref = (
+        f"A{fila_headers_gen}:H{row_pos - 1}"
+    )
+    ws_gen.column_dimensions["B"].width = 26
+    for col_letra in ["A", "C", "D", "E", "F", "G", "H"]:
+        ws_gen.column_dimensions[col_letra].width = 16
+    ws_gen.print_area = f"A1:H{row_pos}"
+    ws_gen.page_setup.orientation = "landscape"
+    ws_gen.page_setup.fitToWidth = 1
+    ws_gen.page_setup.fitToHeight = 0
+    ws_gen.sheet_properties.pageSetUpPr.fitToPage = True
+    ws_gen.print_title_rows = f"{fila_headers_gen}:{fila_headers_gen}"
 
     for _, emp in df_empleados.iterrows():
         nombre_sheet = str(emp["nombre"]).split()[0] + f"_{emp['dni'][-4:]}"
         ws_emp = wb.create_sheet(title=nombre_sheet[:30])
+        ws_emp.sheet_view.showGridLines = False
+        ws_emp.sheet_properties.tabColor = "1F4E78"
 
-        ws_emp.append([f"FICHA INDIVIDUAL DE CONTROL: {emp['nombre']}"])
-        ws_emp.cell(row=1, column=1).font = font_title
-        ws_emp.append([
+        ws_emp.merge_cells("A1:K1")
+        ws_emp["A1"] = f"FICHA INDIVIDUAL DE CONTROL: {emp['nombre']}"
+        ws_emp["A1"].font = font_title
+        ws_emp.row_dimensions[1].height = 24
+
+        ws_emp.merge_cells("A2:K2")
+        ws_emp["A2"] = (
             f"DNI: {emp['dni']} | Cargo: {emp['cargo']} | Sede Principal:"
-            f" {emp['sede_principal']} | Mes: {MESES_NOMBRES[mes_sel]} {anio_sel}"
-        ])
+            f" {emp['sede_principal']} | Mes: {MESES_NOMBRES[mes_sel]}"
+            f" {anio_sel} | Generado el {fecha_generacion}"
+        )
+        ws_emp["A2"].font = font_subtitle
+        for col in range(1, 12):
+            ws_emp.cell(row=3, column=col).border = borde_grueso_abajo
         ws_emp.append([])
 
         cols_emp = [
@@ -2506,15 +2584,18 @@ def generar_excel_completo(df_asistencia, df_empleados, mes_sel, anio_sel):
             "En Rango",
             "Foto Evidencia",
         ]
+        fila_headers_emp = 4
         ws_emp.append(cols_emp)
 
         for c_idx in range(1, len(cols_emp) + 1):
-            cell = ws_emp.cell(row=4, column=c_idx)
+            cell = ws_emp.cell(row=fila_headers_emp, column=c_idx)
             cell.fill, cell.font, cell.alignment = (
-                fill_navy,
+                fill_acento,
                 font_header,
                 Alignment(horizontal="center", vertical="center"),
             )
+        ws_emp.row_dimensions[fila_headers_emp].height = 20
+        ws_emp.freeze_panes = f"A{fila_headers_emp + 1}"
 
         df_registros = df_asistencia[
             (df_asistencia["Empleado"] == emp["nombre"])
@@ -2538,12 +2619,15 @@ def generar_excel_completo(df_asistencia, df_empleados, mes_sel, anio_sel):
             ])
 
             ws_emp.row_dimensions[r_idx].height = 40
+            es_par_emp = (r_idx - fila_headers_emp) % 2 == 0
             for c_i in range(1, len(cols_emp) + 1):
                 cell = ws_emp.cell(row=r_idx, column=c_i)
                 cell.border = border_thin
                 cell.alignment = Alignment(
                     horizontal="center", vertical="center"
                 )
+                if es_par_emp:
+                    cell.fill = fill_zebra
 
                 if c_i == 5:
                     est = str(reg["Estado"]).upper()
@@ -2579,12 +2663,24 @@ def generar_excel_completo(df_asistencia, df_empleados, mes_sel, anio_sel):
 
             r_idx += 1
 
+        if r_idx > fila_headers_emp + 1:
+            ws_emp.auto_filter.ref = (
+                f"A{fila_headers_emp}:K{r_idx - 1}"
+            )
+
         for col in ws_emp.columns:
             max_len = max(len(str(cell.value or "")) for cell in col)
             ws_emp.column_dimensions[get_column_letter(col[0].column)].width = (
                 max(max_len + 3, 13)
             )
+        ws_emp.print_area = f"A1:K{r_idx}"
+        ws_emp.page_setup.orientation = "landscape"
+        ws_emp.page_setup.fitToWidth = 1
+        ws_emp.page_setup.fitToHeight = 0
+        ws_emp.sheet_properties.pageSetUpPr.fitToPage = True
+        ws_emp.print_title_rows = f"{fila_headers_emp}:{fila_headers_emp}"
 
+    wb.active = 0
     output = io.BytesIO()
     wb.save(output)
     return output.getvalue()
