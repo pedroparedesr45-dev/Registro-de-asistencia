@@ -1485,6 +1485,138 @@ def eliminar_empleado_supabase(supabase, empresa_id, dni):
     )
 
 
+def generar_plantilla_empleados(df_sedes):
+    """Genera un Excel de ejemplo (solo encabezados + una fila guía)
+    para que el admin la llene y la vuelva a subir en la carga masiva
+    de trabajadores. Incluye, como referencia, la lista de sedes ya
+    registradas en una segunda hoja."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Trabajadores"
+
+    columnas = [
+        "dni",
+        "nombre",
+        "sede_principal",
+        "cargo",
+        "password",
+    ]
+    ws.append(columnas)
+    for celda in ws[1]:
+        celda.font = Font(bold=True, color="FFFFFF")
+        celda.fill = PatternFill(
+            start_color="1F4E79", end_color="1F4E79", fill_type="solid"
+        )
+
+    sede_ejemplo = (
+        df_sedes["nombre_sede"].iloc[0]
+        if df_sedes is not None and not df_sedes.empty
+        else "OFICINA PRINCIPAL"
+    )
+    ws.append([
+        "75227702",
+        "NOMBRE APELLIDO (ejemplo, bórrame)",
+        sede_ejemplo,
+        "ASISTENTE",
+        "",
+    ])
+
+    ws.column_dimensions["A"].width = 14
+    ws.column_dimensions["B"].width = 32
+    ws.column_dimensions["C"].width = 24
+    ws.column_dimensions["D"].width = 20
+    ws.column_dimensions["E"].width = 16
+
+    if df_sedes is not None and not df_sedes.empty:
+        ws2 = wb.create_sheet("Sedes disponibles (referencia)")
+        ws2.append(["nombre_sede"])
+        ws2["A1"].font = Font(bold=True)
+        for nombre_sede in df_sedes["nombre_sede"].unique():
+            ws2.append([nombre_sede])
+        ws2.column_dimensions["A"].width = 32
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    return buffer.getvalue()
+
+
+def procesar_carga_masiva_empleados(supabase, archivo_excel):
+    """Lee el Excel subido por el admin y crea/actualiza (upsert) cada
+    trabajador en Supabase + en el CSV local. La contraseña, si se deja
+    en blanco en el Excel, usa la contraseña por defecto. Devuelve un
+    resumen con cuántos se crearon/actualizaron y los errores fila por
+    fila."""
+    resultado = {"creados": 0, "actualizados": 0, "errores": []}
+
+    try:
+        df_subido = pd.read_excel(archivo_excel)
+    except Exception as e:
+        resultado["errores"].append(f"No se pudo leer el Excel: {e}")
+        return resultado
+
+    columnas_requeridas = {"dni", "nombre", "sede_principal"}
+    columnas_presentes = {
+        str(c).strip().lower() for c in df_subido.columns
+    }
+    if not columnas_requeridas.issubset(columnas_presentes):
+        resultado["errores"].append(
+            "Faltan columnas obligatorias (dni, nombre, sede_principal)."
+            " Usa la plantilla de ejemplo sin cambiarle los"
+            " encabezados."
+        )
+        return resultado
+
+    df_subido.columns = [str(c).strip().lower() for c in df_subido.columns]
+
+    registros_existentes = cargar_empleados_supabase(
+        supabase, st.session_state.empresa_id
+    ) or []
+    dnis_existentes = {
+        str(r.get("dni", "")).strip() for r in registros_existentes
+    }
+
+    for i, fila in df_subido.iterrows():
+        num_fila_excel = i + 2  # +2: encabezado + índice 0-based
+        try:
+            dni = str(fila.get("dni", "")).strip()
+            if not dni or dni.lower() == "nan":
+                continue  # fila vacía: se ignora
+            if "EJEMPLO" in str(fila.get("nombre", "")).upper():
+                continue  # la fila de ejemplo de la plantilla: se ignora
+
+            sede_principal = str(fila.get("sede_principal", "")).strip()
+            password_fila = str(fila.get("password", "") or "").strip()
+            if password_fila.lower() == "nan":
+                password_fila = ""
+
+            datos_emp = {
+                "empresa_id": st.session_state.empresa_id,
+                "dni": dni,
+                "nombre": str(fila["nombre"]).strip().upper(),
+                "sede_principal": sede_principal,
+                "sedes_autorizadas": json.dumps([sede_principal]),
+                "cargo": str(fila.get("cargo", "") or "").strip().upper(),
+                "password": _hash_clave(
+                    password_fila if password_fila else PASSWORD_EMPLEADO_DEFAULT
+                ),
+                "horario_personalizado": "{}",
+                "fecha_ingreso": hoy_peru().strftime("%Y-%m-%d"),
+            }
+
+            if supabase:
+                guardar_empleado_supabase(supabase, datos_emp)
+
+            if dni in dnis_existentes:
+                resultado["actualizados"] += 1
+            else:
+                resultado["creados"] += 1
+                dnis_existentes.add(dni)
+        except Exception as e:
+            resultado["errores"].append(f"Fila {num_fila_excel}: {e}")
+
+    return resultado
+
+
 # --- MIGRACIÓN: TABLA DE SEDES EN SUPABASE (mismo problema que empleados y
 # empresas: antes vivía solo en un CSV local que se borra en cada reboot/
 # redespliegue, perdiendo coordenadas GPS y horarios reales) ---
@@ -1529,6 +1661,120 @@ def eliminar_sede_supabase(supabase, empresa_id, nombre_sede):
         .eq("nombre_sede", str(nombre_sede))
         .execute()
     )
+
+
+def generar_plantilla_sedes():
+    """Genera un Excel de ejemplo (solo encabezados + una fila guía)
+    para que el admin la llene y la vuelva a subir en la carga masiva
+    de sedes."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Sedes"
+
+    columnas = [
+        "nombre_sede",
+        "latitud",
+        "longitud",
+        "hora_entrada",
+        "hora_salida",
+        "rango_metros",
+    ]
+    ws.append(columnas)
+    for celda in ws[1]:
+        celda.font = Font(bold=True, color="FFFFFF")
+        celda.fill = PatternFill(
+            start_color="1F4E79", end_color="1F4E79", fill_type="solid"
+        )
+
+    ws.append([
+        "OFICINA PRINCIPAL (ejemplo, bórrame)",
+        -8.098100,
+        -79.044800,
+        "08:00:00",
+        "17:00:00",
+        100,
+    ])
+
+    ws.column_dimensions["A"].width = 32
+    for col in "BCDEF":
+        ws.column_dimensions[col].width = 14
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    return buffer.getvalue()
+
+
+def procesar_carga_masiva_sedes(supabase, archivo_excel):
+    """Lee el Excel subido por el admin y crea/actualiza (upsert) cada
+    sede en Supabase + en el CSV local. Devuelve un resumen con
+    cuántas se crearon/actualizaron y los errores fila por fila."""
+    resultado = {"creadas": 0, "actualizadas": 0, "errores": []}
+
+    try:
+        df_subido = pd.read_excel(archivo_excel)
+    except Exception as e:
+        resultado["errores"].append(f"No se pudo leer el Excel: {e}")
+        return resultado
+
+    columnas_requeridas = {"nombre_sede", "latitud", "longitud"}
+    columnas_presentes = {
+        str(c).strip().lower() for c in df_subido.columns
+    }
+    if not columnas_requeridas.issubset(columnas_presentes):
+        resultado["errores"].append(
+            "Faltan columnas obligatorias (nombre_sede, latitud,"
+            " longitud). Usa la plantilla de ejemplo sin cambiarle"
+            " los encabezados."
+        )
+        return resultado
+
+    df_subido.columns = [str(c).strip().lower() for c in df_subido.columns]
+
+    df_sedes_existentes = cargar_sedes_supabase(
+        supabase, st.session_state.empresa_id
+    ) or []
+    nombres_existentes = {
+        str(r.get("nombre_sede", "")).strip().upper()
+        for r in df_sedes_existentes
+    }
+
+    for i, fila in df_subido.iterrows():
+        num_fila_excel = i + 2  # +2: encabezado + índice 0-based
+        try:
+            nombre_sede = str(fila.get("nombre_sede", "")).strip().upper()
+            if (
+                not nombre_sede
+                or nombre_sede == "NAN"
+                or "EJEMPLO" in nombre_sede
+            ):
+                continue  # fila vacía o la fila de ejemplo: se ignora
+
+            datos_sede = {
+                "empresa_id": st.session_state.empresa_id,
+                "nombre_sede": nombre_sede,
+                "latitud": float(fila["latitud"]),
+                "longitud": float(fila["longitud"]),
+                "hora_entrada": str(
+                    fila.get("hora_entrada", "08:00:00") or "08:00:00"
+                ),
+                "hora_salida": str(
+                    fila.get("hora_salida", "17:00:00") or "17:00:00"
+                ),
+                "rango_metros": float(fila.get("rango_metros", 100) or 100),
+            }
+
+            if supabase:
+                guardar_sede_supabase(supabase, datos_sede)
+
+            if nombre_sede in nombres_existentes:
+                resultado["actualizadas"] += 1
+            else:
+                resultado["creadas"] += 1
+                nombres_existentes.add(nombre_sede)
+        except Exception as e:
+            resultado["errores"].append(f"Fila {num_fila_excel}: {e}")
+
+    return resultado
 
 
 def cargar_datos(empresa_id):
@@ -2523,6 +2769,57 @@ def render_modulo_sedes(df_sedes):
                                 df_sedes_full.to_csv(CSV_SEDES, index=False)
                         st.warning("Sede eliminada.")
                         st.rerun()
+
+    st.divider()
+    with st.expander("📤 Carga Masiva de Sedes (Excel)"):
+        st.caption(
+            "Descarga la plantilla, complétala con tus sedes y súbela"
+            " aquí. Si el nombre de una sede ya existe, se actualiza;"
+            " si no existe, se crea."
+        )
+
+        col_pm1, col_pm2 = st.columns(2)
+        with col_pm1:
+            st.download_button(
+                "⬇️ Descargar plantilla de ejemplo (Excel)",
+                data=generar_plantilla_sedes(),
+                file_name="plantilla_sedes.xlsx",
+                mime=(
+                    "application/vnd.openxmlformats-officedocument"
+                    ".spreadsheetml.sheet"
+                ),
+                use_container_width=True,
+            )
+
+        archivo_sedes_masivo = st.file_uploader(
+            "Subir Excel de sedes:", type=["xlsx"], key="uploader_sedes_masivo"
+        )
+
+        if archivo_sedes_masivo is not None:
+            if st.button(
+                "📥 Procesar e Importar Sedes",
+                type="primary",
+                use_container_width=True,
+            ):
+                with st.spinner("Procesando el archivo..."):
+                    resultado = procesar_carga_masiva_sedes(
+                        supabase, archivo_sedes_masivo
+                    )
+                if resultado["errores"]:
+                    with st.expander(
+                        f"⚠️ {len(resultado['errores'])} fila(s) con"
+                        " problemas (clic para ver detalle)"
+                    ):
+                        for err in resultado["errores"]:
+                            st.write(f"- {err}")
+                if resultado["creadas"] or resultado["actualizadas"]:
+                    st.success(
+                        f"✅ {resultado['creadas']} sede(s) creada(s),"
+                        f" {resultado['actualizadas']} actualizada(s)."
+                    )
+                    st.rerun()
+                elif not resultado["errores"]:
+                    st.info("No se encontraron filas para procesar.")
 
 
 def render_modulo_empresas():
@@ -4589,6 +4886,71 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                             )
                                     st.warning("Trabajador eliminado.")
                                     st.rerun()
+
+                st.write("")
+                with st.expander("📤 Carga Masiva de Trabajadores (Excel)"):
+                    st.caption(
+                        "Descarga la plantilla, complétala con tus"
+                        " trabajadores y súbela aquí. Si el DNI ya"
+                        " existe en esta empresa, se actualizan sus"
+                        " datos; si no existe, se crea."
+                    )
+
+                    col_pme1, col_pme2 = st.columns(2)
+                    with col_pme1:
+                        st.download_button(
+                            "⬇️ Descargar plantilla de ejemplo (Excel)",
+                            data=generar_plantilla_empleados(df_sedes),
+                            file_name="plantilla_trabajadores.xlsx",
+                            mime=(
+                                "application/vnd.openxmlformats"
+                                "-officedocument.spreadsheetml.sheet"
+                            ),
+                            use_container_width=True,
+                        )
+
+                    archivo_emp_masivo = st.file_uploader(
+                        "Subir Excel de trabajadores:",
+                        type=["xlsx"],
+                        key="uploader_empleados_masivo",
+                    )
+
+                    if archivo_emp_masivo is not None:
+                        if st.button(
+                            "📥 Procesar e Importar Trabajadores",
+                            type="primary",
+                            use_container_width=True,
+                        ):
+                            with st.spinner("Procesando el archivo..."):
+                                resultado_emp = (
+                                    procesar_carga_masiva_empleados(
+                                        supabase, archivo_emp_masivo
+                                    )
+                                )
+                            if resultado_emp["errores"]:
+                                with st.expander(
+                                    f"⚠️ {len(resultado_emp['errores'])}"
+                                    " fila(s) con problemas (clic para"
+                                    " ver detalle)"
+                                ):
+                                    for err in resultado_emp["errores"]:
+                                        st.write(f"- {err}")
+                            if (
+                                resultado_emp["creados"]
+                                or resultado_emp["actualizados"]
+                            ):
+                                st.success(
+                                    f"✅ {resultado_emp['creados']}"
+                                    " trabajador(es) creado(s),"
+                                    f" {resultado_emp['actualizados']}"
+                                    " actualizado(s)."
+                                )
+                                st.rerun()
+                            elif not resultado_emp["errores"]:
+                                st.info(
+                                    "No se encontraron filas para"
+                                    " procesar."
+                                )
 
                 st.write("")
                 with st.container(border=True):
