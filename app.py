@@ -502,6 +502,14 @@ if not ES_CELULAR:
         (function() {
             if (window._facEnterListo) { return; }
             window._facEnterListo = true;
+            // FASE DE CAPTURA (el 'true' final): Streamlit tiene su
+            // propio manejador de Enter en cada campo, que dispara su
+            // propio "recargar la página" antes de que nuestro clic
+            // llegue a ejecutarse — eso hacía que "cargara pero no
+            // abriera nada" y hubiera que hacerlo manual. Escuchando en
+            // fase de captura interceptamos el Enter ANTES que
+            // Streamlit, evitamos su recarga con stopPropagation, y
+            // hacemos nosotros mismos el clic en el botón.
             document.addEventListener('keydown', function(e) {
                 if (e.key !== 'Enter') { return; }
                 const activo = document.activeElement;
@@ -514,6 +522,8 @@ if not ES_CELULAR:
                     for (const b of botones) {
                         if (!b.disabled && b.offsetParent !== null) {
                             e.preventDefault();
+                            e.stopPropagation();
+                            e.stopImmediatePropagation();
                             b.click();
                             return;
                         }
@@ -524,7 +534,7 @@ if not ES_CELULAR:
                         : null;
                     intentos++;
                 }
-            });
+            }, true);
         })();
         </script>
         """
@@ -2478,36 +2488,50 @@ def generar_excel_completo(df_asistencia, df_empleados, mes_sel, anio_sel):
     ws_gen.sheet_view.showGridLines = False
     ws_gen.sheet_properties.tabColor = "16213E"
 
-    ws_gen.merge_cells("A1:H1")
-    ws_gen["A1"] = "REPORTE CONSOLIDADO DE ASISTENCIA Y AUDITORÍA GPS"
-    ws_gen["A1"].font = font_title
+    # NOTA IMPORTANTE PARA QUIEN EDITE ESTA FUNCIÓN: todas las filas de
+    # esta hoja se escriben con ws.cell(row=N, column=M, value=X), NUNCA
+    # con ws.append(). Mezclar ambos estilos fue justo el bug que
+    # desalineaba encabezados/datos una fila (los filtros y el color
+    # navy caían en una fila vacía, y el texto real quedaba una fila más
+    # abajo sin formato) — append() no respeta un número de fila fijo,
+    # continúa desde la última fila usada, y con celdas ya tocadas a
+    # mano (título, subtítulo) eso se desincroniza.
+
+    ws_gen.merge_cells("A1:I1")
+    ws_gen.cell(
+        row=1, column=1,
+        value="REPORTE CONSOLIDADO DE ASISTENCIA Y AUDITORÍA GPS",
+    ).font = font_title
     ws_gen.row_dimensions[1].height = 26
 
-    ws_gen.merge_cells("A2:H2")
-    ws_gen["A2"] = (
-        f"Empresa: {st.session_state.empresa_id}   |   Período:"
-        f" {MESES_NOMBRES[mes_sel]} {anio_sel}   |   Generado el"
-        f" {fecha_generacion}"
-    )
-    ws_gen["A2"].font = font_subtitle
-    for col in range(1, 9):
-        ws_gen.cell(row=3, column=col).border = borde_grueso_abajo
-    ws_gen.append([])
+    ws_gen.merge_cells("A2:I2")
+    ws_gen.cell(
+        row=2, column=1,
+        value=(
+            f"Empresa: {st.session_state.empresa_id}   |   Período:"
+            f" {MESES_NOMBRES[mes_sel]} {anio_sel}   |   Generado el"
+            f" {fecha_generacion}"
+        ),
+    ).font = font_subtitle
 
     headers_gen = [
         "DNI",
         "Empleado",
         "Sede Principal",
         "Cargo",
+        "Fecha Ingreso",
         "Días Puntuales",
         "Tardanzas",
         "Horas Tardanza",
         "Minutos Extra",
     ]
+    n_cols_gen = len(headers_gen)
+    for col in range(1, n_cols_gen + 1):
+        ws_gen.cell(row=3, column=col).border = borde_grueso_abajo
+
     fila_headers_gen = 4
-    ws_gen.append(headers_gen)
-    for col_idx in range(1, len(headers_gen) + 1):
-        c = ws_gen.cell(row=fila_headers_gen, column=col_idx)
+    for col_idx, encabezado in enumerate(headers_gen, start=1):
+        c = ws_gen.cell(row=fila_headers_gen, column=col_idx, value=encabezado)
         c.fill, c.font, c.alignment = (
             fill_navy,
             font_header,
@@ -2516,7 +2540,7 @@ def generar_excel_completo(df_asistencia, df_empleados, mes_sel, anio_sel):
     ws_gen.row_dimensions[fila_headers_gen].height = 20
     ws_gen.freeze_panes = f"A{fila_headers_gen + 1}"
 
-    row_pos = 5
+    row_pos = fila_headers_gen + 1
     tot_puntuales = tot_tardanzas = tot_hrs_tard = tot_min_extra = 0
     for _, emp in df_empleados.iterrows():
         emp_asist = df_asistencia[(df_asistencia["Empleado"] == emp["nombre"])]
@@ -2559,19 +2583,20 @@ def generar_excel_completo(df_asistencia, df_empleados, mes_sel, anio_sel):
         tot_hrs_tard += hrs_tard
         tot_min_extra += min_extra
 
-        ws_gen.append([
+        valores_fila = [
             emp["dni"],
             emp["nombre"],
             emp["sede_principal"],
             emp["cargo"],
+            emp.get("fecha_ingreso", ""),
             puntuales,
             tardanzas,
             hrs_tard,
             min_extra,
-        ])
+        ]
         es_par = (row_pos - fila_headers_gen) % 2 == 0
-        for c_i in range(1, len(headers_gen) + 1):
-            cell = ws_gen.cell(row=row_pos, column=c_i)
+        for c_i, valor in enumerate(valores_fila, start=1):
+            cell = ws_gen.cell(row=row_pos, column=c_i, value=valor)
             cell.border = border_thin
             cell.alignment = Alignment(
                 horizontal="center" if c_i != 2 else "left", vertical="center"
@@ -2581,32 +2606,33 @@ def generar_excel_completo(df_asistencia, df_empleados, mes_sel, anio_sel):
         row_pos += 1
 
     # Fila de totales, al pie de la tabla resumen.
-    ws_gen.append([
-        "", "TOTAL EMPRESA", "", "",
+    valores_total = [
+        "", "TOTAL EMPRESA", "", "", "",
         tot_puntuales, tot_tardanzas, round(tot_hrs_tard, 2), tot_min_extra,
-    ])
-    for c_i in range(1, len(headers_gen) + 1):
-        cell = ws_gen.cell(row=row_pos, column=c_i)
+    ]
+    for c_i, valor in enumerate(valores_total, start=1):
+        cell = ws_gen.cell(row=row_pos, column=c_i, value=valor)
         cell.font = font_total
         cell.fill = fill_total
         cell.border = Border(top=Side(style="medium", color="16213E"))
         cell.alignment = Alignment(
             horizontal="center" if c_i != 2 else "left", vertical="center"
         )
+    fila_total_gen = row_pos
 
     ws_gen.auto_filter.ref = (
-        f"A{fila_headers_gen}:H{row_pos - 1}"
+        f"A{fila_headers_gen}:{get_column_letter(n_cols_gen)}{fila_total_gen - 1}"
     )
     # Ancho automático según el contenido real (se ignora el título
     # fusionado de las filas 1-2, igual que en las hojas individuales).
     for col in ws_gen.iter_cols(
-        min_row=fila_headers_gen, max_row=row_pos
+        min_row=fila_headers_gen, max_row=fila_total_gen
     ):
         max_len = max(len(str(cell.value or "")) for cell in col)
         ws_gen.column_dimensions[get_column_letter(col[0].column)].width = (
             max(max_len + 3, 13)
         )
-    ws_gen.print_area = f"A1:H{row_pos}"
+    ws_gen.print_area = f"A1:{get_column_letter(n_cols_gen)}{fila_total_gen}"
     ws_gen.page_setup.orientation = "landscape"
     ws_gen.page_setup.fitToWidth = 1
     ws_gen.page_setup.fitToHeight = 0
@@ -2620,20 +2646,24 @@ def generar_excel_completo(df_asistencia, df_empleados, mes_sel, anio_sel):
         ws_emp.sheet_properties.tabColor = "1F4E78"
 
         ws_emp.merge_cells("A1:K1")
-        ws_emp["A1"] = f"FICHA INDIVIDUAL DE CONTROL: {emp['nombre']}"
-        ws_emp["A1"].font = font_title
+        ws_emp.cell(
+            row=1, column=1,
+            value=f"FICHA INDIVIDUAL DE CONTROL: {emp['nombre']}",
+        ).font = font_title
         ws_emp.row_dimensions[1].height = 24
 
         ws_emp.merge_cells("A2:K2")
-        ws_emp["A2"] = (
-            f"DNI: {emp['dni']} | Cargo: {emp['cargo']} | Sede Principal:"
-            f" {emp['sede_principal']} | Mes: {MESES_NOMBRES[mes_sel]}"
-            f" {anio_sel} | Generado el {fecha_generacion}"
-        )
-        ws_emp["A2"].font = font_subtitle
+        ws_emp.cell(
+            row=2, column=1,
+            value=(
+                f"DNI: {emp['dni']} | Cargo: {emp['cargo']} | Sede"
+                f" Principal: {emp['sede_principal']} | Mes:"
+                f" {MESES_NOMBRES[mes_sel]} {anio_sel} | Generado el"
+                f" {fecha_generacion}"
+            ),
+        ).font = font_subtitle
         for col in range(1, 12):
             ws_emp.cell(row=3, column=col).border = borde_grueso_abajo
-        ws_emp.append([])
 
         cols_emp = [
             "Fecha",
@@ -2649,10 +2679,10 @@ def generar_excel_completo(df_asistencia, df_empleados, mes_sel, anio_sel):
             "Foto Evidencia",
         ]
         fila_headers_emp = 4
-        ws_emp.append(cols_emp)
-
-        for c_idx in range(1, len(cols_emp) + 1):
-            cell = ws_emp.cell(row=fila_headers_emp, column=c_idx)
+        for c_idx, encabezado in enumerate(cols_emp, start=1):
+            cell = ws_emp.cell(
+                row=fila_headers_emp, column=c_idx, value=encabezado
+            )
             cell.fill, cell.font, cell.alignment = (
                 fill_acento,
                 font_header,
@@ -2666,9 +2696,9 @@ def generar_excel_completo(df_asistencia, df_empleados, mes_sel, anio_sel):
             & (df_asistencia["Fecha"].astype(str).str.startswith(prefix_periodo))
         ]
 
-        r_idx = 5
+        r_idx = fila_headers_emp + 1
         for _, reg in df_registros.iterrows():
-            ws_emp.append([
+            valores_reg = [
                 reg["Fecha"],
                 reg["Tipo Marcación"],
                 reg["Hora Registrada"],
@@ -2680,12 +2710,12 @@ def generar_excel_completo(df_asistencia, df_empleados, mes_sel, anio_sel):
                 reg["Distancia (m)"],
                 reg["En Rango"],
                 "",
-            ])
+            ]
 
             ws_emp.row_dimensions[r_idx].height = 40
             es_par_emp = (r_idx - fila_headers_emp) % 2 == 0
-            for c_i in range(1, len(cols_emp) + 1):
-                cell = ws_emp.cell(row=r_idx, column=c_i)
+            for c_i, valor in enumerate(valores_reg, start=1):
+                cell = ws_emp.cell(row=r_idx, column=c_i, value=valor)
                 cell.border = border_thin
                 cell.alignment = Alignment(
                     horizontal="center", vertical="center"
