@@ -489,6 +489,47 @@ ES_CELULAR = MODO_MOVIL or (
     and st.session_state.ancho_pantalla_px < 768
 )
 
+# Enter para confirmar (solo en PC, no en celular): al presionar Enter
+# dentro de un campo de texto/contraseña, se hace clic automáticamente
+# en el botón de confirmación más cercano (PIN, contraseña de
+# marcación, cualquier formulario nuevo que se agregue a futuro) — así
+# no hace falta usar el mouse para confirmar. En celular se deja igual
+# que siempre (no se inyecta nada).
+if not ES_CELULAR:
+    render_html(
+        """
+        <script>
+        (function() {
+            if (window._facEnterListo) { return; }
+            window._facEnterListo = true;
+            document.addEventListener('keydown', function(e) {
+                if (e.key !== 'Enter') { return; }
+                const activo = document.activeElement;
+                if (!activo || activo.tagName !== 'INPUT') { return; }
+                if (activo.type !== 'password') { return; }
+                let el = activo.closest('[data-testid="stVerticalBlock"]');
+                let intentos = 0;
+                while (el && intentos < 8) {
+                    const botones = el.querySelectorAll('button');
+                    for (const b of botones) {
+                        if (!b.disabled && b.offsetParent !== null) {
+                            e.preventDefault();
+                            b.click();
+                            return;
+                        }
+                    }
+                    const padre = el.parentElement;
+                    el = padre
+                        ? padre.closest('[data-testid="stVerticalBlock"]')
+                        : null;
+                    intentos++;
+                }
+            });
+        })();
+        </script>
+        """
+    )
+
 # VISTA_TRABAJADOR_MOVIL: además de ser celular, la persona todavía no
 # inició sesión como Admin/SuperAdmin/Developer con PIN. Es la vista
 # simplificada de solo marcación (sin menú lateral ni panel admin).
@@ -2371,6 +2412,23 @@ def render_custom_table(lista_registros):
 
 
 def generar_excel_completo(df_asistencia, df_empleados, mes_sel, anio_sel):
+    # Filtro de seguridad por empresa (defensa adicional): aunque quien
+    # llama a esta función ya entrega df_asistencia/df_empleados
+    # filtrados a la empresa actualmente seleccionada, se vuelve a
+    # filtrar aquí mismo — así, si en el futuro alguien reutiliza esta
+    # función con datos sin filtrar, el Excel de una empresa nunca
+    # puede llegar a incluir trabajadores de otra empresa que comparta
+    # el mismo repositorio/despliegue.
+    empresa_actual = str(st.session_state.empresa_id)
+    if "empresa_id" in df_empleados.columns:
+        df_empleados = df_empleados[
+            df_empleados["empresa_id"].astype(str) == empresa_actual
+        ]
+    if "empresa_id" in df_asistencia.columns:
+        df_asistencia = df_asistencia[
+            df_asistencia["empresa_id"].astype(str) == empresa_actual
+        ]
+
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
 
@@ -2539,9 +2597,15 @@ def generar_excel_completo(df_asistencia, df_empleados, mes_sel, anio_sel):
     ws_gen.auto_filter.ref = (
         f"A{fila_headers_gen}:H{row_pos - 1}"
     )
-    ws_gen.column_dimensions["B"].width = 26
-    for col_letra in ["A", "C", "D", "E", "F", "G", "H"]:
-        ws_gen.column_dimensions[col_letra].width = 16
+    # Ancho automático según el contenido real (se ignora el título
+    # fusionado de las filas 1-2, igual que en las hojas individuales).
+    for col in ws_gen.iter_cols(
+        min_row=fila_headers_gen, max_row=row_pos
+    ):
+        max_len = max(len(str(cell.value or "")) for cell in col)
+        ws_gen.column_dimensions[get_column_letter(col[0].column)].width = (
+            max(max_len + 3, 13)
+        )
     ws_gen.print_area = f"A1:H{row_pos}"
     ws_gen.page_setup.orientation = "landscape"
     ws_gen.page_setup.fitToWidth = 1
@@ -2630,11 +2694,20 @@ def generar_excel_completo(df_asistencia, df_empleados, mes_sel, anio_sel):
                     cell.fill = fill_zebra
 
                 if c_i == 5:
-                    est = str(reg["Estado"]).upper()
+                    est = str(reg["Estado"]).strip().upper()
                     if "TARDANZA" in est:
                         cell.fill, cell.font = fill_naranja, font_blanca
                     elif "PUNTUAL" in est:
                         cell.fill, cell.font = fill_verde, font_blanca
+                    elif est in ("", "NAN", "NONE"):
+                        # Dato faltante/legado: gris neutro, no rojo — el
+                        # rojo se reserva para un estado reconocido como
+                        # problema real, no para "no hay dato".
+                        cell.fill = PatternFill(
+                            start_color="D9D9D9",
+                            end_color="D9D9D9",
+                            fill_type="solid",
+                        )
                     else:
                         cell.fill, cell.font = fill_rojo, font_blanca
 
@@ -2668,7 +2741,13 @@ def generar_excel_completo(df_asistencia, df_empleados, mes_sel, anio_sel):
                 f"A{fila_headers_emp}:K{r_idx - 1}"
             )
 
-        for col in ws_emp.columns:
+        # Ancho automático según el contenido real: se ignoran las filas
+        # 1-3 (título y subtítulo fusionados), porque si no, la columna A
+        # queda inflada al tamaño de ese texto largo en vez del ancho
+        # real que necesitan sus datos (fechas, DNI, etc.).
+        for col in ws_emp.iter_cols(
+            min_row=fila_headers_emp, max_row=max(r_idx - 1, fila_headers_emp)
+        ):
             max_len = max(len(str(cell.value or "")) for cell in col)
             ws_emp.column_dimensions[get_column_letter(col[0].column)].width = (
                 max(max_len + 3, 13)
