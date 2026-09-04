@@ -1938,6 +1938,22 @@ def cargar_datos(empresa_id):
             "fecha_ingreso",
             "consentimiento_aceptado",
             "consentimiento_fecha",
+            "apellido_paterno",
+            "apellido_materno",
+            "nombres",
+            "genero",
+            "fecha_nacimiento",
+            "cta_bancaria",
+            "banco",
+            "correo_electronico",
+            "tipo_contrato",
+            "modalidad",
+            "sueldo_basico",
+            "tipo_aportacion",
+            "afp_tipo",
+            "fecha_cese",
+            "motivo_baja",
+            "exclusion_afp",
         ]
         if registros_empleados:
             df_empleados = pd.DataFrame(registros_empleados)
@@ -1981,6 +1997,26 @@ def cargar_datos(empresa_id):
         df_empleados["consentimiento_fecha"] = df_empleados[
             "consentimiento_fecha"
         ].fillna("")
+        # Datos maestros de planilla (Fase 2 del módulo de Planilla): se
+        # llenan una vez por trabajador desde el panel, y de ahí en
+        # adelante se usan para el cálculo de AFP/ONP, ESSALUD, etc. —
+        # antes había que escribirlos a mano en el Excel cada mes.
+        campos_planilla_texto = [
+            "apellido_paterno", "apellido_materno", "nombres", "genero",
+            "fecha_nacimiento", "cta_bancaria", "banco",
+            "correo_electronico", "tipo_contrato", "modalidad",
+            "tipo_aportacion", "afp_tipo", "fecha_cese", "motivo_baja",
+                "exclusion_afp",
+        ]
+        for campo in campos_planilla_texto:
+            if campo not in df_empleados.columns:
+                df_empleados[campo] = ""
+            df_empleados[campo] = df_empleados[campo].fillna("")
+        if "sueldo_basico" not in df_empleados.columns:
+            df_empleados["sueldo_basico"] = 0.0
+        df_empleados["sueldo_basico"] = pd.to_numeric(
+            df_empleados["sueldo_basico"], errors="coerce"
+        ).fillna(0.0)
         # Se guarda también una copia local, solo como caché/respaldo por
         # si más tarde Supabase no responde (modo offline de emergencia).
         # Se hace un "merge" con lo que ya había en el CSV para no perder
@@ -2037,6 +2073,18 @@ def cargar_datos(empresa_id):
                 df_empleados["consentimiento_aceptado"] = False
             if "consentimiento_fecha" not in df_empleados.columns:
                 df_empleados["consentimiento_fecha"] = ""
+            campos_planilla_texto_off = [
+                "apellido_paterno", "apellido_materno", "nombres", "genero",
+                "fecha_nacimiento", "cta_bancaria", "banco",
+                "correo_electronico", "tipo_contrato", "modalidad",
+                "tipo_aportacion", "afp_tipo", "fecha_cese", "motivo_baja",
+                "exclusion_afp",
+            ]
+            for campo in campos_planilla_texto_off:
+                if campo not in df_empleados.columns:
+                    df_empleados[campo] = ""
+            if "sueldo_basico" not in df_empleados.columns:
+                df_empleados["sueldo_basico"] = 0.0
             df_empleados.to_csv(CSV_EMPLEADOS, index=False)
     else:
         marcar_estado_modo_local("empleados", True)
@@ -2060,6 +2108,22 @@ def cargar_datos(empresa_id):
             "fecha_ingreso": ["2026-01-01", "2026-01-01"],
             "consentimiento_aceptado": [False, False],
             "consentimiento_fecha": ["", ""],
+            "apellido_paterno": ["", ""],
+            "apellido_materno": ["", ""],
+            "nombres": ["", ""],
+            "genero": ["", ""],
+            "fecha_nacimiento": ["", ""],
+            "cta_bancaria": ["", ""],
+            "banco": ["", ""],
+            "correo_electronico": ["", ""],
+            "tipo_contrato": ["", ""],
+            "modalidad": ["", ""],
+            "sueldo_basico": [0.0, 0.0],
+            "tipo_aportacion": ["", ""],
+            "afp_tipo": ["", ""],
+            "fecha_cese": ["", ""],
+            "motivo_baja": ["", ""],
+            "exclusion_afp": ["", ""],
         })
         with bloqueo_csv(CSV_EMPLEADOS):
             df_empleados.to_csv(CSV_EMPLEADOS, index=False)
@@ -5951,10 +6015,217 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                         hide_index=True,
                     )
 
+                st.divider()
+                with st.expander(
+                    "📝 Datos Maestros de Planilla (llenar una vez por"
+                    " trabajador)"
+                ):
+                    st.caption(
+                        "Esta información no sale de la asistencia — se"
+                        " necesita para calcular AFP, ESSALUD y el neto a"
+                        " pagar en la Fase 2. Se llena una sola vez por"
+                        " trabajador; solo se vuelve a tocar cuando algo"
+                        " cambie (aumento de sueldo, cambio de AFP, etc.)."
+                    )
+
+                    if df_empleados.empty:
+                        st.info("Todavía no hay trabajadores registrados.")
+                    else:
+                        empleado_sel_dp = st.selectbox(
+                            "Selecciona un trabajador:",
+                            df_empleados["nombre"].tolist(),
+                            key="emp_sel_datos_planilla",
+                        )
+                        fila_dp = df_empleados[
+                            df_empleados["nombre"] == empleado_sel_dp
+                        ].iloc[0]
+
+                        def _val_dp(campo, default=""):
+                            v = fila_dp.get(campo, default)
+                            return default if pd.isna(v) else v
+
+                        BANCOS_LISTA = [
+                            "", "BBVA", "BCP", "INTERBANK", "SCOTIABANK",
+                            "BCO NACION", "CM PIURA",
+                        ]
+                        TIPO_CONTRATO_LISTA = [
+                            "", "A TIEMPO PARCIAL", "A PLAZO INDETERMINADO",
+                            "INCREMENTO DE ACTIV", "NECESIDAD DE MERCAD",
+                            "SERVICIO ESPECIFICO O DET",
+                        ]
+                        AFP_TIPO_LISTA = [
+                            "", "HABITAT FLUJO", "HABITAT MIXTA",
+                            "INTEGRA FLUJO", "INTEGRA MIXTA", "PRIMA FLUJO",
+                            "PRIMA MIXTA", "PROFUTURO FLUJO",
+                            "PROFUTURO MIXTA",
+                        ]
+                        EXCLUSION_AFP_LISTA = [
+                            "", "JUBILACION", "INVALIDEZ",
+                            "LICENCIA SIN GOCE", "SUBSIDIO ESSALUD",
+                            "APORTES POSTERGADOS", "OTROS MOTIVOS",
+                        ]
+                        MOTIVO_BAJA_LISTA = [
+                            "", "TERMINO DE CONTRATO", "RENUNCIA",
+                            "DESPIDO", "MUTUO DISENSO", "FALLECIMIENTO",
+                        ]
+
+                        def _idx(lista, valor):
+                            return lista.index(valor) if valor in lista else 0
+
+                        col_dp1, col_dp2, col_dp3 = st.columns(3)
+                        with col_dp1:
+                            dp_ap_pat = st.text_input(
+                                "Apellido Paterno:",
+                                value=_val_dp("apellido_paterno"),
+                            )
+                            dp_ap_mat = st.text_input(
+                                "Apellido Materno:",
+                                value=_val_dp("apellido_materno"),
+                            )
+                            dp_nombres = st.text_input(
+                                "Nombres:", value=_val_dp("nombres")
+                            )
+                            dp_genero = st.selectbox(
+                                "Género:",
+                                ["", "FEMENINO", "MASCULINO"],
+                                index=_idx(
+                                    ["", "FEMENINO", "MASCULINO"],
+                                    _val_dp("genero"),
+                                ),
+                            )
+                        with col_dp2:
+                            dp_f_nac = st.text_input(
+                                "Fecha de Nacimiento (DD/MM/AAAA):",
+                                value=_val_dp("fecha_nacimiento"),
+                            )
+                            dp_cta = st.text_input(
+                                "Cuenta Bancaria (CCI):",
+                                value=_val_dp("cta_bancaria"),
+                            )
+                            dp_banco = st.selectbox(
+                                "Banco:",
+                                BANCOS_LISTA,
+                                index=_idx(BANCOS_LISTA, _val_dp("banco")),
+                            )
+                            dp_correo = st.text_input(
+                                "Correo Electrónico:",
+                                value=_val_dp("correo_electronico"),
+                            )
+                        with col_dp3:
+                            dp_tipo_contrato = st.selectbox(
+                                "Tipo de Contrato:",
+                                TIPO_CONTRATO_LISTA,
+                                index=_idx(
+                                    TIPO_CONTRATO_LISTA,
+                                    _val_dp("tipo_contrato"),
+                                ),
+                            )
+                            dp_modalidad = st.selectbox(
+                                "Modalidad:",
+                                ["", "PRESENCIAL", "REMOTO", "MIXTO"],
+                                index=_idx(
+                                    ["", "PRESENCIAL", "REMOTO", "MIXTO"],
+                                    _val_dp("modalidad"),
+                                ),
+                            )
+                            dp_sueldo = st.number_input(
+                                "Sueldo Básico (S/):",
+                                min_value=0.0,
+                                value=float(_val_dp("sueldo_basico", 0.0)),
+                                step=50.0,
+                            )
+                            dp_tipo_aport = st.selectbox(
+                                "Tipo de Aportación:",
+                                ["", "AFP", "ONP"],
+                                index=_idx(
+                                    ["", "AFP", "ONP"],
+                                    _val_dp("tipo_aportacion"),
+                                ),
+                            )
+
+                        col_dp4, col_dp5, col_dp6 = st.columns(3)
+                        with col_dp4:
+                            dp_afp_tipo = st.selectbox(
+                                "AFP específica (si el tipo es AFP):",
+                                AFP_TIPO_LISTA,
+                                index=_idx(
+                                    AFP_TIPO_LISTA, _val_dp("afp_tipo")
+                                ),
+                            )
+                        with col_dp5:
+                            dp_exclusion = st.selectbox(
+                                "Exclusión de AFP/ONP (dejar en blanco si"
+                                " aporta normal):",
+                                EXCLUSION_AFP_LISTA,
+                                index=_idx(
+                                    EXCLUSION_AFP_LISTA,
+                                    _val_dp("exclusion_afp"),
+                                ),
+                            )
+                        with col_dp6:
+                            dp_motivo_baja = st.selectbox(
+                                "Motivo de Baja (si ya no está activo):",
+                                MOTIVO_BAJA_LISTA,
+                                index=_idx(
+                                    MOTIVO_BAJA_LISTA,
+                                    _val_dp("motivo_baja"),
+                                ),
+                            )
+
+                        dp_f_cese = st.text_input(
+                            "Fecha de Cese (dejar en blanco si sigue"
+                            " activo):",
+                            value=_val_dp("fecha_cese"),
+                        )
+
+                        if st.button(
+                            "💾 Guardar Datos de Planilla", type="primary"
+                        ):
+                            datos_dp_guardar = {
+                                "empresa_id": st.session_state.empresa_id,
+                                "dni": str(fila_dp["dni"]),
+                                "apellido_paterno": dp_ap_pat.strip().upper(),
+                                "apellido_materno": dp_ap_mat.strip().upper(),
+                                "nombres": dp_nombres.strip().upper(),
+                                "genero": dp_genero,
+                                "fecha_nacimiento": dp_f_nac.strip(),
+                                "cta_bancaria": dp_cta.strip(),
+                                "banco": dp_banco,
+                                "correo_electronico": dp_correo.strip(),
+                                "tipo_contrato": dp_tipo_contrato,
+                                "modalidad": dp_modalidad,
+                                "sueldo_basico": dp_sueldo,
+                                "tipo_aportacion": dp_tipo_aport,
+                                "afp_tipo": dp_afp_tipo,
+                                "exclusion_afp": dp_exclusion,
+                                "fecha_cese": dp_f_cese.strip(),
+                                "motivo_baja": dp_motivo_baja,
+                            }
+                            if supabase:
+                                try:
+                                    guardar_empleado_supabase(
+                                        supabase, datos_dp_guardar
+                                    )
+                                    st.success(
+                                        "✅ Datos de planilla guardados"
+                                        f" para {empleado_sel_dp}."
+                                    )
+                                    st.rerun()
+                                except Exception as e:
+                                    st.warning(
+                                        "No se pudo guardar en la nube"
+                                        f" ({e}). Intenta de nuevo."
+                                    )
+                            else:
+                                st.warning(
+                                    "El cliente de Supabase no está"
+                                    " configurado ahora mismo."
+                                )
+
                 st.info(
-                    "📌 Esta es la Fase 1 del módulo de Planilla: datos de"
-                    " asistencia listos para usar. El cálculo completo"
-                    " (AFP, ESSALUD, neto a pagar) y la descarga del"
-                    " Excel con el formato exacto de tu planilla llegan"
-                    " en la Fase 2."
+                    "📌 Fase 1 completa (asistencia lista para usar) y"
+                    " Fase 2a completa (datos maestros por trabajador)."
+                    " Sigue la Fase 2b: el motor de cálculo (AFP,"
+                    " ESSALUD, neto a pagar) y la descarga del Excel con"
+                    " el formato exacto de tu planilla."
                 )
