@@ -3968,6 +3968,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                 tab_gestion_nombre,
                 "👥 Personal",
                 "⚙️ Ajustes",
+                "💰 Planilla",
             ])
         elif st.session_state.rol in ["admin", "master"] and ES_CELULAR:
             st.caption(
@@ -5814,3 +5815,164 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                         f"No se pudo guardar en Supabase:"
                                         f" {e_cfg}"
                                     )
+
+            with tab_objs[5]:
+                st.subheader("💰 Planilla — Datos de Asistencia por Período")
+                st.caption(
+                    "Solo visible para SuperAdmin y Developer. Días"
+                    " laborados, tardanzas y horas extra por trabajador,"
+                    " calculados directo desde la asistencia real —"
+                    " listos para usar en tu planilla."
+                )
+
+                with st.container(border=True):
+                    col_pl1, col_pl2 = st.columns(2)
+                    with col_pl1:
+                        mes_nombre_planilla = st.selectbox(
+                            "Mes Evaluado:",
+                            list(MESES_NOMBRES.values()),
+                            index=ahora_peru().month - 1,
+                            key="mes_planilla_sel",
+                        )
+                        mes_planilla = MESES_INVERSO[mes_nombre_planilla]
+                    with col_pl2:
+                        anio_planilla = st.number_input(
+                            "Año Evaluado:",
+                            min_value=2024,
+                            max_value=2030,
+                            value=ahora_peru().year,
+                            key="anio_planilla_sel",
+                        )
+
+                prefix_periodo_planilla = f"{anio_planilla}-{mes_planilla:02d}"
+
+                filas_planilla = []
+                for _, emp in df_empleados.iterrows():
+                    emp_asist = df_asistencia[
+                        df_asistencia["Empleado"] == emp["nombre"]
+                    ]
+                    emp_asist_mes = (
+                        emp_asist[
+                            emp_asist["Fecha"]
+                            .astype(str)
+                            .str.startswith(prefix_periodo_planilla)
+                        ]
+                        if not emp_asist.empty
+                        else pd.DataFrame()
+                    )
+
+                    tardanzas = (
+                        emp_asist_mes[emp_asist_mes["Estado"] == "Tardanza"][
+                            "Fecha"
+                        ].nunique()
+                        if not emp_asist_mes.empty
+                        else 0
+                    )
+                    puntuales = (
+                        emp_asist_mes[emp_asist_mes["Estado"] == "Puntual"][
+                            "Fecha"
+                        ].nunique()
+                        if not emp_asist_mes.empty
+                        else 0
+                    )
+                    min_tard = (
+                        emp_asist_mes["Minutos Tardanza"].sum()
+                        if not emp_asist_mes.empty
+                        else 0
+                    )
+                    min_extra = (
+                        emp_asist_mes["Horas Extra (min)"].sum()
+                        if not emp_asist_mes.empty
+                        else 0
+                    )
+
+                    filas_planilla.append({
+                        "DNI": emp["dni"],
+                        "Empleado": emp["nombre"],
+                        "Sede Principal": emp["sede_principal"],
+                        "Cargo": emp["cargo"],
+                        "Fecha Ingreso": emp.get("fecha_ingreso", ""),
+                        "Días Laborados": puntuales + tardanzas,
+                        "Tardanzas": tardanzas,
+                        "Min. Tardanza": int(min_tard),
+                        "Horas Extra (min)": int(min_extra),
+                    })
+
+                df_planilla_vista = pd.DataFrame(filas_planilla)
+
+                col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+                with col_m1:
+                    st.metric(
+                        "Trabajadores", len(df_planilla_vista)
+                    )
+                with col_m2:
+                    st.metric(
+                        "Total Días Laborados",
+                        int(df_planilla_vista["Días Laborados"].sum())
+                        if not df_planilla_vista.empty
+                        else 0,
+                    )
+                with col_m3:
+                    st.metric(
+                        "Total Tardanzas",
+                        int(df_planilla_vista["Tardanzas"].sum())
+                        if not df_planilla_vista.empty
+                        else 0,
+                    )
+                with col_m4:
+                    st.metric(
+                        "Total Horas Extra (min)",
+                        int(df_planilla_vista["Horas Extra (min)"].sum())
+                        if not df_planilla_vista.empty
+                        else 0,
+                    )
+
+                st.write("")
+                with st.container(border=True):
+                    col_flt1, col_flt2 = st.columns([2, 1])
+                    with col_flt1:
+                        busqueda_planilla = st.text_input(
+                            "🔎 Buscar trabajador por nombre o DNI:",
+                            value="",
+                        )
+                    with col_flt2:
+                        sedes_disponibles_planilla = ["Todas"] + sorted(
+                            df_planilla_vista["Sede Principal"]
+                            .dropna()
+                            .unique()
+                            .tolist()
+                        ) if not df_planilla_vista.empty else ["Todas"]
+                        sede_filtro_planilla = st.selectbox(
+                            "Filtrar por sede:", sedes_disponibles_planilla
+                        )
+
+                    df_mostrar_planilla = df_planilla_vista.copy()
+                    if busqueda_planilla.strip():
+                        termino = busqueda_planilla.strip().upper()
+                        df_mostrar_planilla = df_mostrar_planilla[
+                            df_mostrar_planilla["Empleado"]
+                            .str.upper()
+                            .str.contains(termino)
+                            | df_mostrar_planilla["DNI"]
+                            .astype(str)
+                            .str.contains(termino)
+                        ]
+                    if sede_filtro_planilla != "Todas":
+                        df_mostrar_planilla = df_mostrar_planilla[
+                            df_mostrar_planilla["Sede Principal"]
+                            == sede_filtro_planilla
+                        ]
+
+                    st.dataframe(
+                        df_mostrar_planilla,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+                st.info(
+                    "📌 Esta es la Fase 1 del módulo de Planilla: datos de"
+                    " asistencia listos para usar. El cálculo completo"
+                    " (AFP, ESSALUD, neto a pagar) y la descarga del"
+                    " Excel con el formato exacto de tu planilla llegan"
+                    " en la Fase 2."
+                )
