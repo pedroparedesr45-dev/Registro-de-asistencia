@@ -5889,7 +5889,6 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                     filas_planilla.append({
                         "DNI": emp["dni"],
                         "Empleado": emp["nombre"],
-                        "Sede Principal": emp["sede_principal"],
                         "Cargo": emp["cargo"],
                         "Fecha Ingreso": emp.get("fecha_ingreso", ""),
                         "Días Laborados": puntuales + tardanzas,
@@ -5929,22 +5928,10 @@ elif opcion == "🔐 Panel de Gestión / Admin":
 
                 st.write("")
                 with st.container(border=True):
-                    col_flt1, col_flt2 = st.columns([2, 1])
-                    with col_flt1:
-                        busqueda_planilla = st.text_input(
-                            "🔎 Buscar trabajador por nombre o DNI:",
-                            value="",
-                        )
-                    with col_flt2:
-                        sedes_disponibles_planilla = ["Todas"] + sorted(
-                            df_planilla_vista["Sede Principal"]
-                            .dropna()
-                            .unique()
-                            .tolist()
-                        ) if not df_planilla_vista.empty else ["Todas"]
-                        sede_filtro_planilla = st.selectbox(
-                            "Filtrar por sede:", sedes_disponibles_planilla
-                        )
+                    busqueda_planilla = st.text_input(
+                        "🔎 Buscar trabajador por nombre o DNI:",
+                        value="",
+                    )
 
                     df_mostrar_planilla = df_planilla_vista.copy()
                     if busqueda_planilla.strip():
@@ -5956,11 +5943,6 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                             | df_mostrar_planilla["DNI"]
                             .astype(str)
                             .str.contains(termino)
-                        ]
-                    if sede_filtro_planilla != "Todas":
-                        df_mostrar_planilla = df_mostrar_planilla[
-                            df_mostrar_planilla["Sede Principal"]
-                            == sede_filtro_planilla
                         ]
 
                     st.dataframe(
