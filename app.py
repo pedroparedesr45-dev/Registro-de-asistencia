@@ -2001,38 +2001,48 @@ def generar_excel_honorarios(df_honorarios, razon_social, ruc, periodo_texto):
 # =====================================================================
 
 def generar_excel_afpnet(df_empleados, df_asistencia, mes_sel, anio_sel, supabase):
-    """Genera el Excel de aportes AFP del mes, con los campos que pide
-    el reporte AFPnet: DNI, nombre, AFP, remuneración computable, y los
-    3 componentes del aporte. Solo incluye trabajadores con tipo de
-    aportación = AFP."""
+    """Genera el archivo AFPnet EXACTO que exige el portal para subirlo
+    directo: sin encabezados, sin colores, columnas B (CUSPP), K
+    (Excepción de Aportar) y Q (AFP) en blanco — igual al formato
+    oficial (AFP_NET_FORMATO.xlsx) y al ejemplo real que ya usa la
+    empresa. Solo incluye trabajadores con tipo de aportación = AFP.
+
+    Columnas (A a Q, dejando B/K/Q vacías a propósito):
+    A=N° secuencia, C=Tipo doc (0=DNI), D=N° documento,
+    E=Apellido paterno, F=Apellido materno, G=Nombres,
+    H=Relación Laboral (S/N), I=Inicio de RL (S/N),
+    J=Cese de RL (S/N), L=Remuneración asegurable,
+    M/N/O=Aportes voluntarios (siempre 0, no se manejan en este
+    sistema), P=Tipo de trabajo (N=Dependiente Normal)."""
     prefix_periodo = f"{anio_sel}-{mes_sel:02d}"
+    mapa_excepcion = {
+        "LICENCIA SIN GOCE": "L",
+        "SUBSIDIO ESSALUD": "U",
+        "JUBILACION": "J",
+        "INVALIDEZ": "I",
+        "APORTES POSTERGADOS": "P",
+        "OTROS MOTIVOS": "O",
+    }
+
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "AFPnet"
 
-    font_titulo = Font(name="Mont", bold=True, size=14, color="16213E")
-    font_header = Font(bold=True, size=9, color="FFFFFF")
-    fill_header = PatternFill(start_color="002060", end_color="002060", fill_type="solid")
-    font_normal = Font(size=9.5)
-
-    ws.cell(row=1, column=1, value="REPORTE DE APORTES AFP (AFPnet)").font = font_titulo
-    ws.cell(row=2, column=1, value=f"Período: {MESES_NOMBRES[mes_sel]} {anio_sel}")
-
-    columnas = [
-        "DNI", "Apellidos y Nombres", "AFP", "CUSPP",
-        "Remuneración Computable", "Aporte Obligatorio (10%)",
-        "Comisión AFP", "Prima de Seguro", "Total Aporte AFP",
-    ]
-    for idx, nombre in enumerate(columnas, start=1):
-        c = ws.cell(row=4, column=idx, value=nombre)
-        c.font, c.fill = font_header, fill_header
-        c.alignment = Alignment(horizontal="center", wrap_text=True)
-    ws.freeze_panes = "A5"
-
-    r = 5
+    r = 1
+    secuencia = 1
     for _, emp in df_empleados.sort_values("nombre").iterrows():
         if str(emp.get("tipo_aportacion", "")).upper() != "AFP":
             continue
+
+        fecha_cese_emp = _parsear_fecha_flexible(emp.get("fecha_cese", ""))
+        # Si ya cesó en un mes ANTERIOR a este período, no corresponde
+        # declararlo más en AFPnet.
+        if fecha_cese_emp and (
+            fecha_cese_emp.year < anio_sel
+            or (fecha_cese_emp.year == anio_sel and fecha_cese_emp.month < mes_sel)
+        ):
+            continue
+
         dni = str(emp["dni"])
         periodo_bd = cargar_planilla_periodo_supabase(
             supabase, st.session_state.empresa_id, dni, prefix_periodo
@@ -2060,23 +2070,52 @@ def generar_excel_afpnet(df_empleados, df_asistencia, mes_sel, anio_sel, supabas
             periodo_bd, mes_sel, anio_sel,
             st.session_state.permitir_horas_extra, st.session_state.regimen_laboral,
         )
-        valores = [
-            dni, emp["nombre"], emp.get("afp_tipo", ""),
-            emp.get("cuspp", ""), calc["total_computable"],
-            calc["aporte_obligatorio"], calc["comision_afp"],
-            calc["prima_seguro"], calc["total_afp"],
-        ]
-        for c_i, valor in enumerate(valores, start=1):
-            cell = ws.cell(row=r, column=c_i, value=valor)
-            cell.font = font_normal
-            if c_i >= 5 and isinstance(valor, (int, float)):
-                cell.number_format = "#,##0.00"
-        r += 1
 
-    for col_idx in range(1, len(columnas) + 1):
-        ws.column_dimensions[get_column_letter(col_idx)].width = 20
-    if r > 5:
-        ws.auto_filter.ref = f"A4:I{r-1}"
+        fecha_ingreso_emp = _parsear_fecha_flexible(emp.get("fecha_ingreso", ""))
+        inicio_rl = (
+            "S"
+            if fecha_ingreso_emp
+            and fecha_ingreso_emp.year == anio_sel
+            and fecha_ingreso_emp.month == mes_sel
+            else "N"
+        )
+        cese_rl = (
+            "S"
+            if fecha_cese_emp
+            and fecha_cese_emp.year == anio_sel
+            and fecha_cese_emp.month == mes_sel
+            else "N"
+        )
+        # El filtro de arriba ya descartó a quien cesó en un mes
+        # anterior, así que en este punto la relación laboral siempre
+        # existió durante el mes (S) — J ya marca aparte si además
+        # terminó justo este mes.
+        relacion_laboral = "S"
+
+        excepcion = mapa_excepcion.get(
+            str(emp.get("exclusion_afp", "")).strip().upper(), ""
+        )
+
+        ws.cell(row=r, column=1, value=secuencia)  # A: N° secuencia
+        # B (CUSPP) se deja en blanco a propósito
+        ws.cell(row=r, column=3, value=0)  # C: Tipo doc = 0 (DNI)
+        ws.cell(row=r, column=4, value=dni).number_format = "@"  # D, como texto
+        ws.cell(row=r, column=5, value=emp.get("apellido_paterno", ""))
+        ws.cell(row=r, column=6, value=emp.get("apellido_materno", ""))
+        ws.cell(row=r, column=7, value=emp.get("nombres", "") or emp["nombre"])
+        ws.cell(row=r, column=8, value=relacion_laboral)  # H
+        ws.cell(row=r, column=9, value=inicio_rl)  # I
+        ws.cell(row=r, column=10, value=cese_rl)  # J
+        if excepcion:
+            ws.cell(row=r, column=11, value=excepcion)  # K, solo si aplica
+        ws.cell(row=r, column=12, value=calc["total_computable"])  # L
+        ws.cell(row=r, column=13, value=0)  # M
+        ws.cell(row=r, column=14, value=0)  # N
+        ws.cell(row=r, column=15, value=0)  # O
+        ws.cell(row=r, column=16, value="N")  # P: Dependiente Normal
+        # Q (AFP) se deja en blanco a propósito — lo determina el sistema
+        r += 1
+        secuencia += 1
 
     output = io.BytesIO()
     wb.save(output)
@@ -8574,7 +8613,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                     " 🧾 Honorarios para la Fase 3."
                 )
             with tab_objs[6]:
-                st.subheader("🧾 Recibos por Honorarios (Fase 3)")
+                st.subheader("🧾 Recibos por Honorarios")
                 st.caption(
                     "Solo visible para SuperAdmin y Developer. Sube el"
                     " .txt que exporta el portal de SUNAT (Consulta de"
