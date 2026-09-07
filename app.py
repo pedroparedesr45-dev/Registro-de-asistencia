@@ -904,6 +904,9 @@ if "fecha_inicio_sistema" not in st.session_state:
 if "mejoras_activadas_prod" not in st.session_state:
     st.session_state.mejoras_activadas_prod = False
 
+if "permitir_horas_extra" not in st.session_state:
+    st.session_state.permitir_horas_extra = False
+
 if "emp_login_ok" not in st.session_state:
     st.session_state.emp_login_ok = False
 if "emp_datos" not in st.session_state:
@@ -1436,6 +1439,9 @@ def cargar_configuracion_sistema(supabase, empresa_id):
                 st.session_state.pin_visor = cfg["pin_visor"]
             if cfg.get("pin_master"):
                 st.session_state.pin_master = cfg["pin_master"]
+            st.session_state.permitir_horas_extra = bool(
+                cfg.get("permitir_horas_extra", False)
+            )
     except Exception:
         pass  # si falla, se sigue usando lo que ya había cargado
 
@@ -1802,12 +1808,242 @@ def calcular_renta_5ta_mensual(remuneracion_computable_mensual):
     return round(impuesto_anual / 12, 2)
 
 
-def calcular_planilla_trabajador(
-    fila_emp, dias_laborados, minutos_tardanza, minutos_extra, inp
+def _parsear_fecha_flexible(texto):
+    """Intenta leer una fecha guardada como texto en varios formatos
+    comunes (YYYY-MM-DD o DD/MM/YYYY). Devuelve None si no se puede."""
+    if not texto:
+        return None
+    texto = str(texto).strip()
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(texto, fmt).date()
+        except Exception:
+            continue
+    return None
+
+
+def _sumar_meses(fecha, n):
+    """Suma 'n' meses calendario a una fecha, ajustando el día si el mes
+    resultante tiene menos días (ej. 31 de enero + 1 mes = 28/29 de
+    febrero)."""
+    mes_total = fecha.month - 1 + n
+    anio = fecha.year + mes_total // 12
+    mes = mes_total % 12 + 1
+    dia = min(fecha.day, calendar.monthrange(anio, mes)[1])
+    return date(anio, mes, dia)
+
+
+def _meses_completos_y_dias_extra(inicio, fin):
+    """Cuenta MESES CALENDARIO COMPLETOS entre 'inicio' y 'fin' (como
+    exige la ley peruana para gratificación/CTS ordinarias — no son
+    días÷30), y los días sueltos que quedan después del último mes
+    completo (esos días sueltos solo se usan para la parte truncada,
+    cuando hay un cese a mitad de un mes).
+
+    Se admite 1 día de tolerancia al comparar el candidato contra 'fin':
+    esto es necesario porque semestres definidos por fecha de calendario
+    (ej. 1 de noviembre a 30 de abril, el semestre CTS) SON 6 meses
+    completos aunque abril tenga 30 días y no 31 — sin esta tolerancia,
+    el conteo por aniversario exacto los contaría como 5 meses + 29
+    días, un resultado incorrecto para un trabajador que estuvo
+    presente el semestre entero."""
+    meses = 0
+    while True:
+        candidato = _sumar_meses(inicio, meses + 1)
+        if candidato > fin + timedelta(days=1):
+            break
+        meses += 1
+    fecha_ultimo_mes_completo = _sumar_meses(inicio, meses)
+    dias_extra = max((fin - fecha_ultimo_mes_completo).days, 0)
+    return meses, dias_extra
+
+
+def calcular_horas_extra_soles(sueldo_basico, minutos_extra_por_dia, permitir_horas_extra):
+    """Recargo de horas extra según la legislación peruana (D.S. N°
+    007-2002-TR): las primeras 2 horas (120 min) de exceso EN EL DÍA se
+    pagan con 25% de recargo, y desde la 3ra hora en adelante con 35%.
+    Se calcula día por día, no sobre el acumulado del mes, porque la ley
+    aplica el tramo por jornada diaria."""
+    if not permitir_horas_extra:
+        return 0.0, 0.0
+    valor_min = sueldo_basico / 30 / 8 / 60
+    total_25 = total_35 = 0.0
+    for minutos_dia in minutos_extra_por_dia:
+        minutos_dia = max(float(minutos_dia or 0), 0)
+        primeros = min(minutos_dia, 120)
+        resto = max(minutos_dia - 120, 0)
+        total_25 += primeros * valor_min * 1.25
+        total_35 += resto * valor_min * 1.35
+    return round(total_25, 2), round(total_35, 2)
+
+
+def calcular_gratificacion(
+    sueldo_basico, fecha_ingreso_txt, fecha_cese_txt, mes_sel, anio_sel,
+    regimen_salud,
 ):
-    """Replica la cadena de cálculo de la planilla para un trabajador
-    en un período. 'inp' es el dict de datos variables del período
-    (bonos, adelantos, etc. — ver planilla_periodos)."""
+    """Gratificación ordinaria (Ley 27735) — se paga en julio (semestre
+    ene-jun) y diciembre (semestre jul-dic) — o gratificación TRUNCA si
+    hay una fecha de cese dentro del semestre correspondiente.
+
+    IMPORTANTE (verificado contra un ejemplo oficial): la ley cuenta
+    MESES CALENDARIO COMPLETOS, no días÷30. Los días sueltos que sobran
+    después del último mes completo solo se agregan como fracción
+    (treintavos) cuando el motivo de que el período se corte antes de
+    tiempo es un CESE real — en el pago ordinario de fin de semestre,
+    esos días sueltos NO se pagan (ver `_meses_completos_y_dias_extra`).
+
+    Fórmula: Remuneración Computable ÷ 6 × meses del semestre +
+    bonificación extraordinaria (9% si aporta a EsSalud, 6.75% si está
+    en EPS — Ley 29351)."""
+    fecha_ingreso = _parsear_fecha_flexible(fecha_ingreso_txt)
+    fecha_cese = _parsear_fecha_flexible(fecha_cese_txt)
+    if not fecha_ingreso or sueldo_basico <= 0:
+        return 0.0, 0.0
+
+    if mes_sel <= 7:
+        inicio_sem, fin_sem = date(anio_sel, 1, 1), date(anio_sel, 6, 30)
+    else:
+        inicio_sem, fin_sem = date(anio_sel, 7, 1), date(anio_sel, 12, 31)
+
+    es_mes_pago_ordinario = mes_sel in (7, 12)
+    hay_cese_en_semestre = (
+        fecha_cese is not None and inicio_sem <= fecha_cese <= fin_sem
+    )
+    # La trunca se refleja en el mes exacto del cese; la ordinaria, solo
+    # en julio/diciembre.
+    if es_mes_pago_ordinario and hay_cese_en_semestre and fecha_cese.month != mes_sel:
+        return 0.0, 0.0
+    if not es_mes_pago_ordinario and not (
+        hay_cese_en_semestre and fecha_cese.month == mes_sel
+    ):
+        return 0.0, 0.0
+
+    inicio_computo = max(fecha_ingreso, inicio_sem)
+    es_trunca_por_cese = hay_cese_en_semestre and fecha_cese <= fin_sem
+    fin_computo = fecha_cese if es_trunca_por_cese else fin_sem
+    if inicio_computo > fin_computo:
+        return 0.0, 0.0
+
+    meses, dias_extra = _meses_completos_y_dias_extra(
+        inicio_computo, fin_computo
+    )
+    # Los días sueltos solo se pagan si el corte es por un cese real
+    # (trunca); en el pago ordinario de fin de semestre se descartan.
+    fraccion_extra = (dias_extra / 30) if es_trunca_por_cese else 0
+    meses_totales = min(meses + fraccion_extra, 6)
+
+    gratificacion = round(sueldo_basico / 6 * meses_totales, 2)
+    tasa_bonif = 0.0675 if str(regimen_salud).upper() == "EPS" else 0.09
+    bonificacion_9 = round(gratificacion * tasa_bonif, 2)
+    return gratificacion, bonificacion_9
+
+
+def calcular_cts(
+    sueldo_basico, fecha_ingreso_txt, fecha_cese_txt, mes_sel, anio_sel,
+    asignacion_familiar_monto, regimen_salud,
+):
+    """CTS (D.S. N° 001-97-TR) — se deposita en mayo (semestre nov-abr)
+    y noviembre (semestre may-oct), o CTS TRUNCA si hay cese dentro del
+    semestre. Base computable = sueldo básico + 1/6 de la última
+    gratificación (sin el 9%) + asignación familiar. CTS = computable
+    ÷ 12 × meses del semestre (meses calendario completos, igual que la
+    gratificación — ver esa función para el detalle de por qué no es
+    días÷30)."""
+    fecha_ingreso = _parsear_fecha_flexible(fecha_ingreso_txt)
+    fecha_cese = _parsear_fecha_flexible(fecha_cese_txt)
+    if not fecha_ingreso or sueldo_basico <= 0:
+        return 0.0
+
+    if mes_sel == 5:
+        inicio_sem = date(anio_sel - 1, 11, 1)
+        fin_sem = date(anio_sel, 4, 30)
+        mes_ultima_gratif, anio_ultima_gratif = 12, anio_sel - 1
+    elif mes_sel == 11:
+        inicio_sem = date(anio_sel, 5, 1)
+        fin_sem = date(anio_sel, 10, 31)
+        mes_ultima_gratif, anio_ultima_gratif = 7, anio_sel
+    else:
+        # Fuera de mayo/noviembre, solo corresponde si hay cese ese mes
+        # (CTS trunca) — se ubica el semestre CTS al que pertenece.
+        if not fecha_cese or fecha_cese.month != mes_sel or fecha_cese.year != anio_sel:
+            return 0.0
+        if mes_sel <= 4:
+            inicio_sem, fin_sem = date(anio_sel - 1, 11, 1), date(anio_sel, 4, 30)
+            mes_ultima_gratif, anio_ultima_gratif = 12, anio_sel - 1
+        elif mes_sel <= 10:
+            inicio_sem, fin_sem = date(anio_sel, 5, 1), date(anio_sel, 10, 31)
+            mes_ultima_gratif, anio_ultima_gratif = 7, anio_sel
+        else:
+            inicio_sem, fin_sem = date(anio_sel, 11, 1), date(anio_sel + 1, 4, 30)
+            mes_ultima_gratif, anio_ultima_gratif = 12, anio_sel
+
+    hay_cese_en_semestre = fecha_cese is not None and inicio_sem <= fecha_cese <= fin_sem
+    inicio_computo = max(fecha_ingreso, inicio_sem)
+    es_trunca_por_cese = hay_cese_en_semestre and fecha_cese <= fin_sem
+    fin_computo = fecha_cese if es_trunca_por_cese else fin_sem
+    if inicio_computo > fin_computo:
+        return 0.0
+
+    meses, dias_extra = _meses_completos_y_dias_extra(
+        inicio_computo, fin_computo
+    )
+    fraccion_extra = (dias_extra / 30) if es_trunca_por_cese else 0
+    meses_totales = min(meses + fraccion_extra, 6)
+
+    ultima_gratif, _ = calcular_gratificacion(
+        sueldo_basico, fecha_ingreso_txt, "", mes_ultima_gratif,
+        anio_ultima_gratif, regimen_salud,
+    )
+    computable_cts = sueldo_basico + (ultima_gratif / 6) + asignacion_familiar_monto
+    return round(computable_cts / 12 * meses_totales, 2)
+
+
+def calcular_vacaciones_truncas(sueldo_basico, fecha_ingreso_txt, fecha_cese_txt, mes_sel, anio_sel):
+    """Vacaciones truncas (D.Leg. 713, Art. 22-23) — solo aplica cuando
+    hay una fecha de cese (escenario de liquidación), en el mes exacto
+    del cese. Fórmula: sueldo mensual × (días desde el último
+    aniversario de ingreso hasta el cese ÷ 360)."""
+    fecha_ingreso = _parsear_fecha_flexible(fecha_ingreso_txt)
+    fecha_cese = _parsear_fecha_flexible(fecha_cese_txt)
+    if not fecha_ingreso or not fecha_cese or sueldo_basico <= 0:
+        return 0.0
+    if fecha_cese.month != mes_sel or fecha_cese.year != anio_sel:
+        return 0.0
+
+    try:
+        aniversario = fecha_ingreso.replace(year=fecha_cese.year)
+    except ValueError:
+        aniversario = fecha_ingreso.replace(year=fecha_cese.year, day=28)
+    if aniversario > fecha_cese:
+        try:
+            aniversario = fecha_ingreso.replace(year=fecha_cese.year - 1)
+        except ValueError:
+            aniversario = fecha_ingreso.replace(year=fecha_cese.year - 1, day=28)
+
+    dias = (fecha_cese - aniversario).days
+    if dias <= 0:
+        return 0.0
+    return round(sueldo_basico * (dias / 360), 2)
+
+
+def calcular_planilla_trabajador(
+    fila_emp, dias_laborados, minutos_no_laborados, minutos_extra_por_dia,
+    inp, mes_sel, anio_sel, permitir_horas_extra,
+):
+    """Replica la cadena de cálculo de la planilla para un trabajador en
+    un período. 'inp' es el dict de datos variables del período (bonos,
+    adelantos, etc. — ver planilla_periodos). 'minutos_extra_por_dia' es
+    una lista con los minutos de exceso de CADA día del período (no un
+    total acumulado), necesaria para aplicar el recargo por tramos.
+
+    BASE DE CÁLCULO (confirmada con el dueño del proyecto): la jornada
+    siempre se computa sobre 8 horas por día (480 minutos), sin contar
+    la hora de almuerzo, sin importar cuántas horas reales marque el
+    trabajador. Una tardanza SIEMPRE resta minutos efectivamente
+    laborados ese día (nunca se compensa quedándose después) — eso baja
+    el sueldo base del mes de forma proporcional. Quedarse después de
+    su hora de salida solo cuenta como horas extra, y únicamente si la
+    empresa las tiene habilitadas."""
 
     def _n(clave, default=0):
         v = inp.get(clave, default)
@@ -1816,24 +2052,58 @@ def calcular_planilla_trabajador(
     sueldo_basico = float(fila_emp.get("sueldo_basico", 0) or 0)
     rem_vacacional = _n("remuneracion_vacacional")
 
-    sueldo_mes = (
-        (sueldo_basico - rem_vacacional) / 30 * dias_laborados
-        if dias_laborados
-        else 0
+    JORNADA_MINUTOS = 480  # 8 horas, la hora de almuerzo no se cuenta
+    minutos_esperados = dias_laborados * JORNADA_MINUTOS
+    minutos_efectivos = max(minutos_esperados - minutos_no_laborados, 0)
+    dias_efectivos = (
+        minutos_efectivos / JORNADA_MINUTOS if JORNADA_MINUTOS else 0
     )
 
-    horas_extra_soles_sugerido = round(
-        (sueldo_basico / 30 / 8 / 60) * 1.25 * minutos_extra, 2
+    sueldo_mes = (
+        (sueldo_basico - rem_vacacional) / 30 * dias_efectivos
+        if dias_efectivos
+        else 0
+    )
+    # Solo informativo (para mostrar en el reporte); NO se resta aparte
+    # en descuentos, porque ya está reflejado en el sueldo del mes de
+    # arriba — restarlo dos veces sería un error.
+    tardanza_equivalente_soles = round(
+        (sueldo_basico / 30 / 8 / 60) * minutos_no_laborados, 2
+    )
+
+    horas_extra_25_sugerido, horas_extra_35_sugerido = (
+        calcular_horas_extra_soles(
+            sueldo_basico, minutos_extra_por_dia, permitir_horas_extra
+        )
+    )
+
+    fecha_ingreso_txt = fila_emp.get("fecha_ingreso", "")
+    fecha_cese_txt = fila_emp.get("fecha_cese", "")
+    regimen_salud = fila_emp.get("regimen_salud", "ESSALUD") or "ESSALUD"
+    asignacion_familiar_monto = (
+        113.0 if fila_emp.get("asignacion_familiar") else 0.0
+    )
+
+    gratif_auto, _bonif_auto = calcular_gratificacion(
+        sueldo_basico, fecha_ingreso_txt, fecha_cese_txt, mes_sel,
+        anio_sel, regimen_salud,
+    )
+    cts_auto = calcular_cts(
+        sueldo_basico, fecha_ingreso_txt, fecha_cese_txt, mes_sel,
+        anio_sel, asignacion_familiar_monto, regimen_salud,
+    )
+    vac_truncas_auto = calcular_vacaciones_truncas(
+        sueldo_basico, fecha_ingreso_txt, fecha_cese_txt, mes_sel, anio_sel
     )
 
     ingresos = {
         "sueldo_basico_mes": round(sueldo_mes, 2),
         "remuneracion_vacacional": rem_vacacional,
-        "vacaciones_truncas": _n("vacaciones_truncas"),
+        "vacaciones_truncas": _n("vacaciones_truncas", vac_truncas_auto),
         "compensacion_vacacional": _n("compensacion_vacacional"),
         "dia_feriado_descanso": _n("dia_feriado_descanso"),
-        "horas_extra_25": _n("horas_extra_25", horas_extra_soles_sugerido),
-        "horas_extra_35": _n("horas_extra_35"),
+        "horas_extra_25": _n("horas_extra_25", horas_extra_25_sugerido),
+        "horas_extra_35": _n("horas_extra_35", horas_extra_35_sugerido),
         "reintegro": _n("reintegro"),
         "subsidios": _n("subsidios"),
         "canasta_navidena": _n("canasta_navidena"),
@@ -1843,20 +2113,17 @@ def calcular_planilla_trabajador(
         "refrigerio": _n("refrigerio"),
         "herramientas": _n("herramientas"),
         "otros_conceptos": _n("otros_conceptos"),
-        "cts": _n("cts"),
-        "gratificacion": _n("gratificacion"),
+        "cts": _n("cts", cts_auto),
+        "gratificacion": _n("gratificacion", gratif_auto),
     }
+    tasa_bonif = 0.0675 if str(regimen_salud).upper() == "EPS" else 0.09
     ingresos["bonif_extraordinaria_9"] = round(
-        ingresos["gratificacion"] * 0.09, 2
+        ingresos["gratificacion"] * tasa_bonif, 2
     )
     total_bruta = round(sum(ingresos.values()), 2)
 
-    sueldo_por_minuto = (sueldo_basico / 30 / 10 / 60) if sueldo_basico else 0
-    tardanza_soles = round(sueldo_por_minuto * minutos_tardanza, 2)
-
     descuentos = {
         "inasistencias": _n("inasistencias"),
-        "tardanzas": tardanza_soles,
         "otros_deducibles": _n("otros_deducibles"),
         "otros": _n("otros"),
     }
@@ -1911,9 +2178,11 @@ def calcular_planilla_trabajador(
     )
 
     return {
+
         **ingresos,
         "total_bruta": total_bruta,
         **descuentos,
+        "tardanza_equivalente_soles": tardanza_equivalente_soles,
         "otros_dsctos": otros_dsctos,
         "adelantos": adelantos,
         "total_descuentos": total_descuentos,
@@ -2175,6 +2444,8 @@ def cargar_datos(empresa_id):
             "fecha_cese",
             "motivo_baja",
             "exclusion_afp",
+            "asignacion_familiar",
+            "regimen_salud",
         ]
         if registros_empleados:
             df_empleados = pd.DataFrame(registros_empleados)
@@ -2227,7 +2498,7 @@ def cargar_datos(empresa_id):
             "fecha_nacimiento", "cta_bancaria", "banco",
             "correo_electronico", "tipo_contrato", "modalidad",
             "tipo_aportacion", "afp_tipo", "fecha_cese", "motivo_baja",
-                "exclusion_afp",
+            "exclusion_afp", "regimen_salud",
         ]
         for campo in campos_planilla_texto:
             if campo not in df_empleados.columns:
@@ -2238,6 +2509,11 @@ def cargar_datos(empresa_id):
         df_empleados["sueldo_basico"] = pd.to_numeric(
             df_empleados["sueldo_basico"], errors="coerce"
         ).fillna(0.0)
+        if "asignacion_familiar" not in df_empleados.columns:
+            df_empleados["asignacion_familiar"] = False
+        df_empleados["asignacion_familiar"] = (
+            df_empleados["asignacion_familiar"].fillna(False)
+        )
         # Se guarda también una copia local, solo como caché/respaldo por
         # si más tarde Supabase no responde (modo offline de emergencia).
         # Se hace un "merge" con lo que ya había en el CSV para no perder
@@ -2299,13 +2575,15 @@ def cargar_datos(empresa_id):
                 "fecha_nacimiento", "cta_bancaria", "banco",
                 "correo_electronico", "tipo_contrato", "modalidad",
                 "tipo_aportacion", "afp_tipo", "fecha_cese", "motivo_baja",
-                "exclusion_afp",
+                "exclusion_afp", "regimen_salud",
             ]
             for campo in campos_planilla_texto_off:
                 if campo not in df_empleados.columns:
                     df_empleados[campo] = ""
             if "sueldo_basico" not in df_empleados.columns:
                 df_empleados["sueldo_basico"] = 0.0
+            if "asignacion_familiar" not in df_empleados.columns:
+                df_empleados["asignacion_familiar"] = False
             df_empleados.to_csv(CSV_EMPLEADOS, index=False)
     else:
         marcar_estado_modo_local("empleados", True)
@@ -2345,6 +2623,8 @@ def cargar_datos(empresa_id):
             "fecha_cese": ["", ""],
             "motivo_baja": ["", ""],
             "exclusion_afp": ["", ""],
+            "regimen_salud": ["ESSALUD", "ESSALUD"],
+            "asignacion_familiar": [False, False],
         })
         with bloqueo_csv(CSV_EMPLEADOS):
             df_empleados.to_csv(CSV_EMPLEADOS, index=False)
@@ -2721,6 +3001,7 @@ def generar_planilla_excel_completa(
     calcular_planilla_trabajador) y se entrega como un reporte ya
     resuelto y verificable."""
     prefix_periodo = f"{anio_sel}-{mes_sel:02d}"
+    df_empleados = df_empleados.sort_values("nombre").reset_index(drop=True)
 
     fila_empresa = (
         df_empresas[
@@ -2852,14 +3133,19 @@ def generar_planilla_excel_completa(
             if not emp_asist_mes.empty
             else 0
         )
-        min_extra = (
-            int(emp_asist_mes["Horas Extra (min)"].sum())
+        minutos_extra_por_dia = (
+            emp_asist_mes.groupby("Fecha")["Horas Extra (min)"]
+            .sum()
+            .tolist()
             if not emp_asist_mes.empty
-            else 0
+            else []
         )
+        min_extra = int(sum(minutos_extra_por_dia))
 
         calc = calcular_planilla_trabajador(
-            emp, dias_laborados, min_tardanza, min_extra, periodo_bd
+            emp, dias_laborados, min_tardanza, minutos_extra_por_dia,
+            periodo_bd, mes_sel, anio_sel,
+            st.session_state.permitir_horas_extra,
         )
 
         valores = [
@@ -2877,7 +3163,7 @@ def generar_planilla_excel_completa(
             calc["refrigerio"], calc["herramientas"],
             calc["otros_conceptos"], calc["cts"], calc["gratificacion"],
             calc["bonif_extraordinaria_9"], calc["total_bruta"],
-            calc["inasistencias"], calc["tardanzas"],
+            calc["inasistencias"], calc["tardanza_equivalente_soles"],
             calc["otros_deducibles"], calc["otros"], calc["otros_dsctos"],
             calc["adelantos"], calc["total_descuentos"],
             emp.get("tipo_aportacion", ""), calc["total_onp"],
@@ -6321,6 +6607,31 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                     " listos para usar en tu planilla."
                 )
 
+                toggle_hextra = st.checkbox(
+                    "🕐 Esta empresa SÍ reconoce y paga horas extra",
+                    value=st.session_state.permitir_horas_extra,
+                    help=(
+                        "Si lo dejas destildado, las horas extra no se"
+                        " calculan ni se pagan en la planilla, aunque el"
+                        " trabajador se quede más tiempo marcado. Algunas"
+                        " empresas no las reconocen."
+                    ),
+                )
+                if toggle_hextra != st.session_state.permitir_horas_extra:
+                    st.session_state.permitir_horas_extra = toggle_hextra
+                    if supabase:
+                        try:
+                            guardar_configuracion_sistema(
+                                supabase,
+                                st.session_state.empresa_id,
+                                permitir_horas_extra=toggle_hextra,
+                            )
+                        except Exception as e:
+                            st.warning(
+                                f"No se pudo guardar la preferencia ({e})."
+                            )
+                    st.rerun()
+
                 with st.container(border=True):
                     col_pl1, col_pl2 = st.columns(2)
                     with col_pl1:
@@ -6690,172 +7001,252 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                             or {}
                         )
 
+                        # Sugerencias automáticas (gratificación, CTS,
+                        # vacaciones truncas, horas extra) — se muestran
+                        # ya calculadas, pero siguen siendo editables por
+                        # si el contador necesita ajustar algo puntual.
+                        _emp_asist_var = df_asistencia[
+                            df_asistencia["Empleado"] == empleado_sel_var
+                        ]
+                        _emp_asist_var_mes = (
+                            _emp_asist_var[
+                                _emp_asist_var["Fecha"]
+                                .astype(str)
+                                .str.startswith(prefix_periodo_planilla)
+                            ]
+                            if not _emp_asist_var.empty
+                            else pd.DataFrame()
+                        )
+                        _minutos_extra_dia_var = (
+                            _emp_asist_var_mes.groupby("Fecha")[
+                                "Horas Extra (min)"
+                            ]
+                            .sum()
+                            .tolist()
+                            if not _emp_asist_var_mes.empty
+                            else []
+                        )
+                        _hextra25_sug, _hextra35_sug = (
+                            calcular_horas_extra_soles(
+                                float(fila_var.get("sueldo_basico", 0) or 0),
+                                _minutos_extra_dia_var,
+                                st.session_state.permitir_horas_extra,
+                            )
+                        )
+                        _gratif_sug, _ = calcular_gratificacion(
+                            float(fila_var.get("sueldo_basico", 0) or 0),
+                            fila_var.get("fecha_ingreso", ""),
+                            fila_var.get("fecha_cese", ""),
+                            mes_planilla, anio_planilla,
+                            fila_var.get("regimen_salud", "ESSALUD"),
+                        )
+                        _cts_sug = calcular_cts(
+                            float(fila_var.get("sueldo_basico", 0) or 0),
+                            fila_var.get("fecha_ingreso", ""),
+                            fila_var.get("fecha_cese", ""),
+                            mes_planilla, anio_planilla,
+                            113.0 if fila_var.get("asignacion_familiar") else 0.0,
+                            fila_var.get("regimen_salud", "ESSALUD"),
+                        )
+                        _vactruncas_sug = calcular_vacaciones_truncas(
+                            float(fila_var.get("sueldo_basico", 0) or 0),
+                            fila_var.get("fecha_ingreso", ""),
+                            fila_var.get("fecha_cese", ""),
+                            mes_planilla, anio_planilla,
+                        )
+
                         def _v(campo, default=0.0):
                             v = datos_periodo_previos.get(campo, default)
                             return float(v) if v not in (None, "") else float(
                                 default
                             )
 
-                        st.markdown("##### Ingresos adicionales")
-                        col_v1, col_v2, col_v3 = st.columns(3)
+                        st.markdown(
+                            "##### 🔴 Lo más frecuente (revisar cada"
+                            " período)"
+                        )
+                        col_v1, col_v2 = st.columns(2)
                         with col_v1:
-                            v_rem_vac = st.number_input(
-                                "Remuneración Vacacional (S/):",
-                                min_value=0.0,
-                                value=_v("remuneracion_vacacional"),
-                                key="v_rem_vac",
-                            )
-                            v_vac_truncas = st.number_input(
-                                "Vacaciones Truncas (S/):",
-                                min_value=0.0,
-                                value=_v("vacaciones_truncas"),
-                                key="v_vac_truncas",
-                            )
-                            v_comp_vac = st.number_input(
-                                "Compensación Vacacional (S/):",
-                                min_value=0.0,
-                                value=_v("compensacion_vacacional"),
-                                key="v_comp_vac",
-                            )
-                            v_feriado = st.number_input(
-                                "Día Feriado/Descanso (S/):",
-                                min_value=0.0,
-                                value=_v("dia_feriado_descanso"),
-                                key="v_feriado",
-                            )
-                            v_reintegro = st.number_input(
-                                "Reintegro (S/):",
-                                min_value=0.0,
-                                value=_v("reintegro"),
-                                key="v_reintegro",
-                            )
-                            v_subsidios = st.number_input(
-                                "Subsidios (S/):",
-                                min_value=0.0,
-                                value=_v("subsidios"),
-                                key="v_subsidios",
-                            )
-                        with col_v2:
-                            v_canasta = st.number_input(
-                                "Canasta Navideña (S/):",
-                                min_value=0.0,
-                                value=_v("canasta_navidena"),
-                                key="v_canasta",
-                            )
-                            v_bono_prod = st.number_input(
-                                "Bono de Productividad (S/):",
-                                min_value=0.0,
-                                value=_v("bono_productividad"),
-                                key="v_bono_prod",
-                            )
-                            v_otros_gratif = st.number_input(
-                                "Otros - Gratif. Extraordinaria (S/):",
-                                min_value=0.0,
-                                value=_v("otros_gratif_extraord"),
-                                key="v_otros_gratif",
-                            )
-                            v_movilidad = st.number_input(
-                                "Movilidad (S/):",
-                                min_value=0.0,
-                                value=_v("movilidad"),
-                                key="v_movilidad",
-                            )
-                            v_refrigerio = st.number_input(
-                                "Refrigerio (S/):",
-                                min_value=0.0,
-                                value=_v("refrigerio"),
-                                key="v_refrigerio",
-                            )
-                            v_herramientas = st.number_input(
-                                "Herramientas (S/):",
-                                min_value=0.0,
-                                value=_v("herramientas"),
-                                key="v_herramientas",
-                            )
-                        with col_v3:
-                            v_otros_conc = st.number_input(
-                                "Otros Conceptos Supeditados (S/):",
-                                min_value=0.0,
-                                value=_v("otros_conceptos"),
-                                key="v_otros_conc",
-                            )
-                            v_cts = st.number_input(
-                                "CTS (S/):",
-                                min_value=0.0,
-                                value=_v("cts"),
-                                key="v_cts",
-                            )
-                            v_gratif = st.number_input(
-                                "Gratificación (S/):",
-                                min_value=0.0,
-                                value=_v("gratificacion"),
-                                key="v_gratif",
-                            )
-                            v_hextra25 = st.number_input(
-                                "Horas Extra 25% (S/, sugerido desde"
-                                " asistencia):",
-                                min_value=0.0,
-                                value=_v("horas_extra_25"),
-                                key="v_hextra25",
-                            )
-                            v_hextra35 = st.number_input(
-                                "Horas Extra 35% (S/):",
-                                min_value=0.0,
-                                value=_v("horas_extra_35"),
-                                key="v_hextra35",
-                            )
-
-                        st.markdown("##### Descuentos y retenciones")
-                        col_v4, col_v5 = st.columns(2)
-                        with col_v4:
-                            v_inasist = st.number_input(
-                                "Inasistencias (S/):",
-                                min_value=0.0,
-                                value=_v("inasistencias"),
-                                key="v_inasist",
-                            )
-                            v_otros_deduc = st.number_input(
-                                "Otros Deducibles Base Imponible (S/):",
-                                min_value=0.0,
-                                value=_v("otros_deducibles"),
-                                key="v_otros_deduc",
-                            )
-                            v_otros = st.number_input(
-                                "Otros (S/):",
-                                min_value=0.0,
-                                value=_v("otros"),
-                                key="v_otros",
-                            )
-                        with col_v5:
-                            v_otros_dsctos = st.number_input(
-                                "Otros Descuentos (S/):",
-                                min_value=0.0,
-                                value=_v("otros_dsctos"),
-                                key="v_otros_dsctos",
-                            )
                             v_adelantos = st.number_input(
                                 "Adelantos (S/):",
                                 min_value=0.0,
                                 value=_v("adelantos"),
                                 key="v_adelantos",
                             )
+                            v_otros_dsctos = st.number_input(
+                                "Otros Descuentos (S/):",
+                                min_value=0.0,
+                                value=_v("otros_dsctos"),
+                                key="v_otros_dsctos",
+                            )
+                            v_inasist = st.number_input(
+                                "Inasistencias (S/):",
+                                min_value=0.0,
+                                value=_v("inasistencias"),
+                                key="v_inasist",
+                            )
+                        with col_v2:
+                            v_bono_prod = st.number_input(
+                                "Bono de Productividad (S/):",
+                                min_value=0.0,
+                                value=_v("bono_productividad"),
+                                key="v_bono_prod",
+                            )
+                            v_hextra25 = st.number_input(
+                                "Horas Extra 25% (S/, calculado automático"
+                                " desde asistencia — editable):",
+                                min_value=0.0,
+                                value=_v("horas_extra_25", _hextra25_sug),
+                                key="v_hextra25",
+                            )
+                            v_hextra35 = st.number_input(
+                                "Horas Extra 35% (S/, calculado automático"
+                                " desde asistencia — editable):",
+                                min_value=0.0,
+                                value=_v("horas_extra_35", _hextra35_sug),
+                                key="v_hextra35",
+                            )
+                        if not st.session_state.permitir_horas_extra:
+                            st.caption(
+                                "ℹ️ Las horas extra están desactivadas para"
+                                " esta empresa (interruptor arriba de"
+                                " todo) — por eso el valor sugerido es 0."
+                            )
 
-                        st.markdown("##### Aportaciones del empleador")
-                        col_v6, col_v7 = st.columns(2)
-                        with col_v6:
-                            v_sctr = st.number_input(
-                                "SCTR (S/):",
+                        st.markdown(
+                            "##### 🟡 Automático — revisar si corresponde"
+                            " este mes"
+                        )
+                        st.caption(
+                            "Gratificación se calcula sola en julio y"
+                            " diciembre; CTS en mayo y noviembre;"
+                            " Vacaciones Truncas solo si hay fecha de cese"
+                            " este mes. Si no corresponde, aparecen en 0."
+                        )
+                        col_v3, col_v4 = st.columns(2)
+                        with col_v3:
+                            v_gratif = st.number_input(
+                                "Gratificación (S/):",
                                 min_value=0.0,
-                                value=_v("sctr"),
-                                key="v_sctr",
+                                value=_v("gratificacion", _gratif_sug),
+                                key="v_gratif",
                             )
-                        with col_v7:
-                            v_seguro_vida = st.number_input(
-                                "Seguro de Vida Ley (S/):",
+                            v_cts = st.number_input(
+                                "CTS (S/):",
                                 min_value=0.0,
-                                value=_v("seguro_vida_ley"),
-                                key="v_seguro_vida",
+                                value=_v("cts", _cts_sug),
+                                key="v_cts",
                             )
+                        with col_v4:
+                            v_vac_truncas = st.number_input(
+                                "Vacaciones Truncas (S/):",
+                                min_value=0.0,
+                                value=_v("vacaciones_truncas", _vactruncas_sug),
+                                key="v_vac_truncas",
+                            )
+
+                        with st.expander(
+                            "🟢 Ocasional (bonos especiales, montos que casi"
+                            " no cambian)"
+                        ):
+                            col_v5, col_v6, col_v7 = st.columns(3)
+                            with col_v5:
+                                v_rem_vac = st.number_input(
+                                    "Remuneración Vacacional (S/):",
+                                    min_value=0.0,
+                                    value=_v("remuneracion_vacacional"),
+                                    key="v_rem_vac",
+                                )
+                                v_comp_vac = st.number_input(
+                                    "Compensación Vacacional (S/):",
+                                    min_value=0.0,
+                                    value=_v("compensacion_vacacional"),
+                                    key="v_comp_vac",
+                                )
+                                v_feriado = st.number_input(
+                                    "Día Feriado/Descanso (S/):",
+                                    min_value=0.0,
+                                    value=_v("dia_feriado_descanso"),
+                                    key="v_feriado",
+                                )
+                            with col_v6:
+                                v_reintegro = st.number_input(
+                                    "Reintegro (S/):",
+                                    min_value=0.0,
+                                    value=_v("reintegro"),
+                                    key="v_reintegro",
+                                )
+                                v_subsidios = st.number_input(
+                                    "Subsidios (S/):",
+                                    min_value=0.0,
+                                    value=_v("subsidios"),
+                                    key="v_subsidios",
+                                )
+                                v_canasta = st.number_input(
+                                    "Canasta Navideña (S/):",
+                                    min_value=0.0,
+                                    value=_v("canasta_navidena"),
+                                    key="v_canasta",
+                                )
+                            with col_v7:
+                                v_otros_gratif = st.number_input(
+                                    "Otros - Gratif. Extraordinaria (S/):",
+                                    min_value=0.0,
+                                    value=_v("otros_gratif_extraord"),
+                                    key="v_otros_gratif",
+                                )
+                                v_movilidad = st.number_input(
+                                    "Movilidad (S/):",
+                                    min_value=0.0,
+                                    value=_v("movilidad"),
+                                    key="v_movilidad",
+                                )
+                                v_refrigerio = st.number_input(
+                                    "Refrigerio (S/):",
+                                    min_value=0.0,
+                                    value=_v("refrigerio"),
+                                    key="v_refrigerio",
+                                )
+
+                            col_v8, col_v9 = st.columns(2)
+                            with col_v8:
+                                v_herramientas = st.number_input(
+                                    "Herramientas (S/):",
+                                    min_value=0.0,
+                                    value=_v("herramientas"),
+                                    key="v_herramientas",
+                                )
+                                v_otros_conc = st.number_input(
+                                    "Otros Conceptos Supeditados (S/):",
+                                    min_value=0.0,
+                                    value=_v("otros_conceptos"),
+                                    key="v_otros_conc",
+                                )
+                                v_otros_deduc = st.number_input(
+                                    "Otros Deducibles Base Imponible (S/):",
+                                    min_value=0.0,
+                                    value=_v("otros_deducibles"),
+                                    key="v_otros_deduc",
+                                )
+                            with col_v9:
+                                v_otros = st.number_input(
+                                    "Otros (S/):",
+                                    min_value=0.0,
+                                    value=_v("otros"),
+                                    key="v_otros",
+                                )
+                                v_sctr = st.number_input(
+                                    "SCTR (S/):",
+                                    min_value=0.0,
+                                    value=_v("sctr"),
+                                    key="v_sctr",
+                                )
+                                v_seguro_vida = st.number_input(
+                                    "Seguro de Vida Ley (S/):",
+                                    min_value=0.0,
+                                    value=_v("seguro_vida_ley"),
+                                    key="v_seguro_vida",
+                                )
 
                         if st.button(
                             "💾 Guardar Datos del Período", type="primary"
