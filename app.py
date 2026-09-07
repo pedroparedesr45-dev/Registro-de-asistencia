@@ -1860,6 +1860,14 @@ def procesar_txt_honorarios(archivo_subido):
             df[campo_num] = pd.to_numeric(df[campo_num], errors="coerce").fillna(0)
     if "nro_doc_emisor" in df.columns:
         df["nro_doc_emisor"] = df["nro_doc_emisor"].astype(str)
+
+    # Separa "E001-1042" en Serie ("E001") y Número ("1042").
+    if "nro_doc" in df.columns:
+        partes = df["nro_doc"].astype(str).str.split("-", n=1, expand=True)
+        df["serie"] = partes[0].fillna("")
+        df["numero"] = (
+            partes[1].fillna("") if partes.shape[1] > 1 else ""
+        )
     return df
 
 
@@ -1877,6 +1885,8 @@ def guardar_honorarios_supabase(supabase, empresa_id, periodo, df_honorarios):
             "fecha_emision": str(fila.get("fecha_emision", "")),
             "tipo_doc": str(fila.get("tipo_doc", "")),
             "nro_doc": str(fila.get("nro_doc", "")),
+            "serie": str(fila.get("serie", "")),
+            "numero": str(fila.get("numero", "")),
             "estado": str(fila.get("estado", "")),
             "tipo_doc_emisor": str(fila.get("tipo_doc_emisor", "")),
             "nro_doc_emisor": str(fila.get("nro_doc_emisor", "")),
@@ -1915,9 +1925,72 @@ def cargar_honorarios_periodo_supabase(supabase, empresa_id, periodo):
         return None
 
 
-def generar_excel_honorarios(df_honorarios, razon_social, ruc, periodo_texto):
-    """Genera el Excel de Recibos por Honorarios con el mismo espíritu
-    visual del resto del sistema (encabezado + tabla coloreada)."""
+def cargar_todos_honorarios_supabase(supabase, empresa_id):
+    """Trae TODOS los recibos de honorarios guardados hasta la fecha
+    para esta empresa, sin filtrar por período — para el consolidado."""
+    if not supabase:
+        return None
+    try:
+        res = (
+            supabase.table("recibos_honorarios")
+            .select("*")
+            .eq("empresa_id", str(empresa_id))
+            .execute()
+        )
+        return res.data
+    except Exception:
+        return None
+
+
+# --- PLAME para Recibos por Honorarios: Estructura 7 (Prestadores de
+# Servicios) + Estructura 20 (Detalle de comprobantes de 4ta) — ⚠️
+# BORRADOR, con los campos conceptuales que exige SUNAT, sin verificar
+# todavía las posiciones/anchos exactos del Anexo 3 oficial. ---
+
+def generar_plame_honorarios_estructura7(df_honorarios):
+    """Borrador de la Estructura 7 — registro de los prestadores de
+    servicios (uno por cada RUC/DNI distinto que emitió recibos)."""
+    df_unicos = df_honorarios.drop_duplicates(subset=["nro_doc_emisor"])
+    filas = []
+    for _, fila in df_unicos.iterrows():
+        filas.append({
+            "Tipo Doc.": "6" if fila.get("tipo_doc_emisor") == "RUC" else "1",
+            "Nro. Documento": fila.get("nro_doc_emisor", ""),
+            "Apellidos y Nombres / Razón Social": fila.get("nombre_emisor", ""),
+        })
+    return pd.DataFrame(filas)
+
+
+def generar_plame_honorarios_estructura20(df_honorarios, periodo_texto):
+    """Borrador de la Estructura 20 — detalle de cada comprobante
+    (recibo por honorarios) del período."""
+    filas = []
+    for _, fila in df_honorarios.iterrows():
+        filas.append({
+            "Tipo Doc. Prestador": (
+                "6" if fila.get("tipo_doc_emisor") == "RUC" else "1"
+            ),
+            "Nro. Doc. Prestador": fila.get("nro_doc_emisor", ""),
+            "Periodo": periodo_texto.replace("-", ""),
+            "Tipo Comprobante": "Recibo por Honorarios",
+            "Serie": fila.get("serie", ""),
+            "Número": fila.get("numero", ""),
+            "Fecha Emisión": fila.get("fecha_emision", ""),
+            "Importe Bruto": float(fila.get("renta_bruta", 0) or 0),
+            "Retención 8%": float(fila.get("impuesto_renta", 0) or 0),
+            "Importe Neto": float(fila.get("renta_neta", 0) or 0),
+        })
+    return pd.DataFrame(filas)
+
+
+def generar_excel_honorarios(
+    df_honorarios, razon_social, ruc, periodo_texto, agrupar_por_mes=False
+):
+    """Genera el Excel de Recibos por Honorarios. Si 'agrupar_por_mes'
+    es True, ignora el período único y arma UNA sola tabla con TODOS
+    los recibos recibidos, separados por una fila que marca el cambio
+    de mes (según la fecha real de emisión de cada recibo) — es el
+    modo "consolidado"."""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "RECIBOS POR HONORARIOS"
@@ -1927,6 +2000,8 @@ def generar_excel_honorarios(df_honorarios, razon_social, ruc, periodo_texto):
     font_header = Font(name="Calibri", bold=True, size=9, color="FFFFFF")
     fill_header = PatternFill(start_color="6C3483", end_color="6C3483", fill_type="solid")
     fill_zebra = PatternFill(start_color="F1E9F5", end_color="F1E9F5", fill_type="solid")
+    fill_separador_mes = PatternFill(start_color="4A235A", end_color="4A235A", fill_type="solid")
+    font_separador_mes = Font(name="Calibri", bold=True, size=10, color="FFFFFF")
     border_thin = Border(
         left=Side(style="thin", color="D9D9D9"), right=Side(style="thin", color="D9D9D9"),
         top=Side(style="thin", color="D9D9D9"), bottom=Side(style="thin", color="D9D9D9"),
@@ -1934,11 +2009,15 @@ def generar_excel_honorarios(df_honorarios, razon_social, ruc, periodo_texto):
 
     ws.cell(row=1, column=1, value=str(razon_social)).font = font_titulo
     ws.cell(row=2, column=1, value=f"RUC: {ruc}").font = font_normal
-    ws.cell(row=3, column=1, value="RECIBOS POR HONORARIOS").font = font_titulo
+    titulo_hoja = (
+        "RECIBOS POR HONORARIOS — CONSOLIDADO"
+        if agrupar_por_mes else "RECIBOS POR HONORARIOS"
+    )
+    ws.cell(row=3, column=1, value=titulo_hoja).font = font_titulo
     ws.cell(row=4, column=1, value=f"Período: {periodo_texto}").font = font_normal
 
     columnas = [
-        "Fecha Emisión", "Tipo Doc.", "Nro. Doc.", "Estado",
+        "Fecha Emisión", "Tipo Doc.", "Serie", "Número", "Estado",
         "Tipo Doc. Emisor", "Nro. Doc. Emisor", "Nombre Emisor",
         "Descripción", "Moneda", "Renta Bruta", "Impuesto Renta (Retención)",
         "Renta Neta", "Monto Pendiente",
@@ -1949,12 +2028,37 @@ def generar_excel_honorarios(df_honorarios, razon_social, ruc, periodo_texto):
         c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     ws.freeze_panes = "A7"
 
+    df_ordenado = df_honorarios.copy()
+    df_ordenado["_fecha_dt"] = pd.to_datetime(
+        df_ordenado["fecha_emision"], format="%d/%m/%Y", errors="coerce"
+    )
+    df_ordenado = df_ordenado.sort_values("_fecha_dt", na_position="last")
+
     r = 7
     total_bruta = total_impuesto = total_neta = 0.0
-    for _, fila in df_honorarios.iterrows():
+    mes_actual_separador = None
+    for _, fila in df_ordenado.iterrows():
+        if agrupar_por_mes:
+            fecha_dt = fila.get("_fecha_dt")
+            etiqueta_mes = (
+                f"{MESES_NOMBRES.get(fecha_dt.month, '?')} {fecha_dt.year}"
+                if pd.notna(fecha_dt) else "Sin fecha reconocida"
+            )
+            if etiqueta_mes != mes_actual_separador:
+                mes_actual_separador = etiqueta_mes
+                ws.merge_cells(
+                    start_row=r, start_column=1, end_row=r, end_column=len(columnas)
+                )
+                c_sep = ws.cell(row=r, column=1, value=f"📅  {etiqueta_mes}")
+                c_sep.font, c_sep.fill = font_separador_mes, fill_separador_mes
+                c_sep.alignment = Alignment(horizontal="left", vertical="center")
+                ws.row_dimensions[r].height = 20
+                r += 1
+
         valores = [
             fila.get("fecha_emision", ""), fila.get("tipo_doc", ""),
-            fila.get("nro_doc", ""), fila.get("estado", ""),
+            fila.get("serie", ""), fila.get("numero", ""),
+            fila.get("estado", ""),
             fila.get("tipo_doc_emisor", ""), fila.get("nro_doc_emisor", ""),
             fila.get("nombre_emisor", ""), fila.get("descripcion", ""),
             fila.get("moneda", ""), float(fila.get("renta_bruta", 0) or 0),
@@ -1962,25 +2066,24 @@ def generar_excel_honorarios(df_honorarios, razon_social, ruc, periodo_texto):
             float(fila.get("renta_neta", 0) or 0),
             float(fila.get("monto_pendiente", 0) or 0),
         ]
-        total_bruta += valores[9]
-        total_impuesto += valores[10]
-        total_neta += valores[11]
+        total_bruta += valores[10]
+        total_impuesto += valores[11]
+        total_neta += valores[12]
         for c_i, valor in enumerate(valores, start=1):
             cell = ws.cell(row=r, column=c_i, value=valor)
             cell.border = border_thin
             cell.font = font_normal
             if (r - 7) % 2 == 0:
                 cell.fill = fill_zebra
-            if c_i >= 10 and isinstance(valor, (int, float)):
+            if c_i >= 11 and isinstance(valor, (int, float)):
                 cell.number_format = "#,##0.00"
         r += 1
 
-    ws.cell(row=r, column=7, value="TOTAL").font = Font(bold=True)
-    ws.cell(row=r, column=10, value=round(total_bruta, 2)).font = Font(bold=True)
-    ws.cell(row=r, column=11, value=round(total_impuesto, 2)).font = Font(bold=True)
-    ws.cell(row=r, column=12, value=round(total_neta, 2)).font = Font(bold=True)
+    ws.cell(row=r, column=8, value="TOTAL").font = Font(bold=True)
+    ws.cell(row=r, column=11, value=round(total_bruta, 2)).font = Font(bold=True)
+    ws.cell(row=r, column=12, value=round(total_impuesto, 2)).font = Font(bold=True)
+    ws.cell(row=r, column=13, value=round(total_neta, 2)).font = Font(bold=True)
 
-    ws.auto_filter.ref = f"A6:M{r-1}"
     for col_idx in range(1, len(columnas) + 1):
         max_len = max(
             (len(str(ws.cell(row=rr, column=col_idx).value or "")) for rr in range(6, r)),
@@ -8710,34 +8813,141 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                         ]
                     st.dataframe(
                         df_hon_mostrar[[
-                            "fecha_emision", "nro_doc", "nro_doc_emisor",
-                            "nombre_emisor", "renta_bruta",
-                            "impuesto_renta", "renta_neta",
+                            "fecha_emision", "serie", "numero",
+                            "nro_doc_emisor", "nombre_emisor",
+                            "renta_bruta", "impuesto_renta", "renta_neta",
                         ]],
                         use_container_width=True, hide_index=True,
                     )
 
-                    if st.button(
-                        "📥 Descargar Excel de Honorarios", type="primary"
-                    ):
-                        razon_social_hon, ruc_hon = _obtener_datos_empresa(
-                            df_empresas
-                        )
-                        excel_hon = generar_excel_honorarios(
-                            df_hon_vista, razon_social_hon, ruc_hon,
-                            f"{mes_nombre_hon} {anio_hon}",
-                        )
-                        st.download_button(
-                            label="💾 Confirmar Descarga",
-                            data=excel_hon,
-                            file_name=(
-                                f"Honorarios_{st.session_state.empresa_id}_"
-                                f"{mes_nombre_hon}_{anio_hon}.xlsx"
-                            ),
-                            mime=(
-                                "application/vnd.openxmlformats-officedocument"
-                                ".spreadsheetml.sheet"
-                            ),
+                    col_bhon1, col_bhon2 = st.columns(2)
+                    with col_bhon1:
+                        if st.button(
+                            "📥 Descargar Excel del Mes", type="primary",
                             use_container_width=True,
-                            key="descargar_honorarios",
+                        ):
+                            razon_social_hon, ruc_hon = _obtener_datos_empresa(
+                                df_empresas
+                            )
+                            excel_hon = generar_excel_honorarios(
+                                df_hon_vista, razon_social_hon, ruc_hon,
+                                f"{mes_nombre_hon} {anio_hon}",
+                            )
+                            st.download_button(
+                                label="💾 Confirmar Descarga",
+                                data=excel_hon,
+                                file_name=(
+                                    f"Honorarios_{st.session_state.empresa_id}_"
+                                    f"{mes_nombre_hon}_{anio_hon}.xlsx"
+                                ),
+                                mime=(
+                                    "application/vnd.openxmlformats-officedocument"
+                                    ".spreadsheetml.sheet"
+                                ),
+                                use_container_width=True,
+                                key="descargar_honorarios",
+                            )
+                    with col_bhon2:
+                        if st.button(
+                            "📚 Generar Consolidado (todos los recibos)",
+                            use_container_width=True,
+                            help=(
+                                "Un solo Excel con TODOS los recibos que"
+                                " has cargado hasta ahora, en cualquier"
+                                " período, separados visualmente por mes"
+                                " según la fecha real de cada recibo."
+                            ),
+                        ):
+                            registros_todos = (
+                                cargar_todos_honorarios_supabase(
+                                    supabase, st.session_state.empresa_id
+                                )
+                                or []
+                            )
+                            if not registros_todos:
+                                st.info(
+                                    "No hay recibos guardados todavía."
+                                )
+                            else:
+                                razon_social_c, ruc_c = _obtener_datos_empresa(
+                                    df_empresas
+                                )
+                                df_todos_hon = pd.DataFrame(registros_todos)
+                                excel_consolidado = generar_excel_honorarios(
+                                    df_todos_hon, razon_social_c, ruc_c,
+                                    "Consolidado — todos los períodos",
+                                    agrupar_por_mes=True,
+                                )
+                                st.download_button(
+                                    label="💾 Confirmar Descarga Consolidado",
+                                    data=excel_consolidado,
+                                    file_name=(
+                                        "Honorarios_Consolidado_"
+                                        f"{st.session_state.empresa_id}.xlsx"
+                                    ),
+                                    mime=(
+                                        "application/vnd.openxmlformats"
+                                        "-officedocument.spreadsheetml.sheet"
+                                    ),
+                                    use_container_width=True,
+                                    key="descargar_honorarios_consolidado",
+                                )
+
+                    st.divider()
+                    if st.button(
+                        "📋 Generar Carga Masiva a PLAME (borrador)",
+                        help=(
+                            "⚠️ Borrador con las Estructuras 7 y 20 que"
+                            " pide PLAME para Recibos por Honorarios —"
+                            " no verificado todavía contra el formato"
+                            " oficial exacto de SUNAT."
+                        ),
+                    ):
+                        st.warning(
+                            "⚠️ Estos 2 archivos son un BORRADOR — tienen"
+                            " los campos conceptuales de las Estructuras"
+                            " 7 y 20 de PLAME, pero no se verificaron"
+                            " todavía contra el formato exacto oficial."
+                            " Revísalos con tu contador antes de"
+                            " importarlos al PDT PLAME."
                         )
+                        df_estruct7 = generar_plame_honorarios_estructura7(
+                            df_hon_vista
+                        )
+                        df_estruct20 = generar_plame_honorarios_estructura20(
+                            df_hon_vista, periodo_hon
+                        )
+                        buf7 = io.BytesIO()
+                        df_estruct7.to_excel(buf7, index=False, engine="openpyxl")
+                        buf20 = io.BytesIO()
+                        df_estruct20.to_excel(buf20, index=False, engine="openpyxl")
+
+                        col_plame1, col_plame2 = st.columns(2)
+                        with col_plame1:
+                            st.download_button(
+                                "💾 Estructura 7 (Prestadores)",
+                                data=buf7.getvalue(),
+                                file_name=(
+                                    f"PLAME_Estructura7_{periodo_hon}.xlsx"
+                                ),
+                                mime=(
+                                    "application/vnd.openxmlformats"
+                                    "-officedocument.spreadsheetml.sheet"
+                                ),
+                                use_container_width=True,
+                                key="descargar_estructura7",
+                            )
+                        with col_plame2:
+                            st.download_button(
+                                "💾 Estructura 20 (Comprobantes)",
+                                data=buf20.getvalue(),
+                                file_name=(
+                                    f"PLAME_Estructura20_{periodo_hon}.xlsx"
+                                ),
+                                mime=(
+                                    "application/vnd.openxmlformats"
+                                    "-officedocument.spreadsheetml.sheet"
+                                ),
+                                use_container_width=True,
+                                key="descargar_estructura20",
+                            )
