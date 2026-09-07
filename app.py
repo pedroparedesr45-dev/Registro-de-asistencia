@@ -24,6 +24,7 @@ import plotly.express as px
 from openpyxl.drawing.image import Image as OpenPyxlImage
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.comments import Comment
 from PIL import Image
 from streamlit_js_eval import get_geolocation, streamlit_js_eval
 
@@ -2026,6 +2027,52 @@ def calcular_vacaciones_truncas(sueldo_basico, fecha_ingreso_txt, fecha_cese_txt
     return round(sueldo_basico * (dias / 360), 2)
 
 
+def calcular_edad(fecha_nacimiento_txt, fecha_referencia=None):
+    """Edad en años cumplidos, igual a la fórmula de tu Excel
+    (=INT((fecha_ref - fecha_nacimiento)/365)). Por defecto usa hoy
+    como fecha de referencia (en tu Excel era una fecha fija escrita a
+    mano en DATOS!B22 — aquí se actualiza sola cada día)."""
+    fecha_nac = _parsear_fecha_flexible(fecha_nacimiento_txt)
+    if not fecha_nac:
+        return None
+    ref = fecha_referencia or hoy_peru()
+    return int((ref - fecha_nac).days / 365)
+
+
+def calcular_condicion(fecha_cese_txt):
+    """'ACTIVO' o 'BAJA', igual a la fórmula de tu Excel."""
+    fecha_cese = _parsear_fecha_flexible(fecha_cese_txt)
+    return "BAJA" if fecha_cese else "ACTIVO"
+
+
+def calcular_permanencia_texto(
+    fecha_ingreso_txt, fecha_cese_txt, fecha_referencia=None
+):
+    """Texto de antigüedad tipo 'X años, Y meses y Z días', igual al
+    DATEDIF encadenado de tu Excel (columna PERMANENCIA)."""
+    fecha_ingreso = _parsear_fecha_flexible(fecha_ingreso_txt)
+    if not fecha_ingreso:
+        return ""
+    fecha_cese = _parsear_fecha_flexible(fecha_cese_txt)
+    fecha_fin = fecha_cese or fecha_referencia or hoy_peru()
+    if fecha_fin < fecha_ingreso:
+        return ""
+
+    anios = fecha_fin.year - fecha_ingreso.year
+    meses = fecha_fin.month - fecha_ingreso.month
+    dias = fecha_fin.day - fecha_ingreso.day
+    if dias < 0:
+        meses -= 1
+        dias += calendar.monthrange(
+            fecha_fin.year if fecha_fin.month > 1 else fecha_fin.year - 1,
+            fecha_fin.month - 1 if fecha_fin.month > 1 else 12,
+        )[1]
+    if meses < 0:
+        anios -= 1
+        meses += 12
+    return f"{anios} años, {meses} meses y {dias} días."
+
+
 def calcular_planilla_trabajador(
     fila_emp, dias_laborados, minutos_no_laborados, minutos_extra_por_dia,
     inp, mes_sel, anio_sel, permitir_horas_extra,
@@ -2126,8 +2173,21 @@ def calcular_planilla_trabajador(
     )
     total_bruta = round(sum(ingresos.values()), 2)
 
+    # Descuento por inasistencias, INCLUYENDO el descanso dominical
+    # proporcional (D.S. N° 012-92-TR, verificado con ejemplos oficiales
+    # y con la fórmula real de tu Excel: por cada día de falta se
+    # descuenta el día no laborado + un treintavo adicional por el
+    # dominical perdido).
+    dias_falta = _n("dias_falta")
+    valor_dia = sueldo_basico / 30 if sueldo_basico else 0
+    descuento_dias_falta = round(valor_dia * dias_falta, 2)
+    descuento_dominical = round((valor_dia / 30) * dias_falta, 2)
+    inasistencias_total = round(
+        descuento_dias_falta + descuento_dominical, 2
+    )
+
     descuentos = {
-        "inasistencias": _n("inasistencias"),
+        "inasistencias": inasistencias_total,
         "otros_deducibles": _n("otros_deducibles"),
         "otros": _n("otros"),
     }
@@ -2186,6 +2246,9 @@ def calcular_planilla_trabajador(
         **ingresos,
         "total_bruta": total_bruta,
         **descuentos,
+        "dias_falta": dias_falta,
+        "descuento_dias_falta": descuento_dias_falta,
+        "descuento_dominical": descuento_dominical,
         "tardanza_equivalente_soles": tardanza_equivalente_soles,
         "otros_dsctos": otros_dsctos,
         "adelantos": adelantos,
@@ -2446,6 +2509,7 @@ def cargar_datos(empresa_id):
             "tipo_aportacion",
             "afp_tipo",
             "fecha_cese",
+            "fecha_fin_contrato",
             "motivo_baja",
             "exclusion_afp",
             "asignacion_familiar",
@@ -2501,7 +2565,7 @@ def cargar_datos(empresa_id):
             "apellido_paterno", "apellido_materno", "nombres", "genero",
             "fecha_nacimiento", "cta_bancaria", "banco",
             "correo_electronico", "tipo_contrato", "modalidad",
-            "tipo_aportacion", "afp_tipo", "fecha_cese", "motivo_baja",
+            "tipo_aportacion", "afp_tipo", "fecha_cese", "fecha_fin_contrato", "motivo_baja",
             "exclusion_afp", "regimen_salud",
         ]
         for campo in campos_planilla_texto:
@@ -2578,7 +2642,7 @@ def cargar_datos(empresa_id):
                 "apellido_paterno", "apellido_materno", "nombres", "genero",
                 "fecha_nacimiento", "cta_bancaria", "banco",
                 "correo_electronico", "tipo_contrato", "modalidad",
-                "tipo_aportacion", "afp_tipo", "fecha_cese", "motivo_baja",
+                "tipo_aportacion", "afp_tipo", "fecha_cese", "fecha_fin_contrato", "motivo_baja",
                 "exclusion_afp", "regimen_salud",
             ]
             for campo in campos_planilla_texto_off:
@@ -2625,6 +2689,7 @@ def cargar_datos(empresa_id):
             "tipo_aportacion": ["", ""],
             "afp_tipo": ["", ""],
             "fecha_cese": ["", ""],
+            "fecha_fin_contrato": ["", ""],
             "motivo_baja": ["", ""],
             "exclusion_afp": ["", ""],
             "regimen_salud": ["ESSALUD", "ESSALUD"],
@@ -2995,23 +3060,25 @@ def _construir_hoja_planilla(
     supabase,
 ):
     """Llena una hoja de Excel ya creada con la planilla completa de un
-    mes específico (mismo formato/encabezado del archivo original). Se
-    separó de generar_planilla_excel_completa para poder reutilizarla
-    también en la descarga anual (12 hojas, una por mes) sin duplicar
-    la lógica."""
+    mes específico (mismo formato/encabezado del archivo original, con
+    los mismos colores reales: navy para la mayoría de grupos, verde
+    para Ingresos, rojo para Descuentos). Se separó de
+    generar_planilla_excel_completa para poder reutilizarla también en
+    la descarga anual (12 hojas, una por mes) sin duplicar la lógica."""
     prefix_periodo = f"{anio_sel}-{mes_sel:02d}"
     df_empleados = df_empleados.sort_values("nombre").reset_index(drop=True)
 
-    font_titulo_emp = Font(name="Calibri", bold=True, size=13)
-    font_normal = Font(name="Calibri", size=10)
-    font_header_grupo = Font(name="Calibri", bold=True, size=10, color="FFFFFF")
-    fill_header_grupo = PatternFill(
-        start_color="16213E", end_color="16213E", fill_type="solid"
-    )
-    font_header_col = Font(name="Calibri", bold=True, size=8.5, color="FFFFFF")
-    fill_header_col = PatternFill(
-        start_color="1F4E78", end_color="1F4E78", fill_type="solid"
-    )
+    font_titulo_emp = Font(name="Calibri", bold=True, size=13, color="16213E")
+    font_normal = Font(name="Calibri", size=9.5)
+    font_header_col = Font(name="Calibri", bold=True, size=8, color="FFFFFF")
+
+    # Colores REALES sacados de tu archivo Excel (no aproximados).
+    COLOR_NAVY = "002060"
+    COLOR_VERDE = "00B050"
+    COLOR_ROJO = "C00000"
+    fill_navy = PatternFill(start_color=COLOR_NAVY, end_color=COLOR_NAVY, fill_type="solid")
+    fill_verde = PatternFill(start_color=COLOR_VERDE, end_color=COLOR_VERDE, fill_type="solid")
+    fill_rojo = PatternFill(start_color=COLOR_ROJO, end_color=COLOR_ROJO, fill_type="solid")
     border_thin = Border(
         left=Side(style="thin", color="D9D9D9"),
         right=Side(style="thin", color="D9D9D9"),
@@ -3028,52 +3095,201 @@ def _construir_hoja_planilla(
         row=4, column=2, value=f"MES DE {MESES_NOMBRES[mes_sel].upper()} {anio_sel}"
     ).font = font_normal
 
-    # --- Grupos de columnas (fila 6) y columnas (fila 7) ---
+    # --- Grupos de columnas (fila 6), con sus colores reales y ancho
+    # (número de columnas) ---
     grupos = [
-        ("DATOS DEL TRABAJADOR", 6),
-        ("CONTRATO", 3),
-        ("CONTROL ASISTENCIA", 3),
-        ("INGRESOS DEL TRABAJADOR", 19),
-        ("DESCUENTOS AL TRABAJADOR", 6),
-        ("RETENCIONES AL TRABAJADOR", 5),
-        ("APORTACIONES DEL EMPLEADOR", 4),
+        ("DATOS DEL TRABAJADOR", 11, fill_navy),
+        ("CONTRATO", 10, fill_navy),
+        ("CONTROL ASISTENCIA", 3, fill_navy),
+        ("INGRESOS DEL TRABAJADOR", 20, fill_verde),
+        ("DESCUENTOS AL TRABAJADOR", 8, fill_rojo),
+        ("RETENCIONES AL TRABAJADOR", 6, fill_navy),
+        ("APORTACIONES DEL EMPLEADOR", 5, fill_navy),
     ]
     col_actual = 1
-    for nombre_grupo, ancho in grupos:
+    for nombre_grupo, ancho, fill_grupo in grupos:
         ws.merge_cells(
             start_row=6, start_column=col_actual,
             end_row=6, end_column=col_actual + ancho - 1,
         )
         c = ws.cell(row=6, column=col_actual, value=nombre_grupo)
-        c.font, c.fill = font_header_grupo, fill_header_grupo
+        c.font = Font(name="Calibri", bold=True, size=10, color="FFFFFF")
+        c.fill = fill_grupo
         c.alignment = Alignment(horizontal="center")
         col_actual += ancho
 
+    # --- Columnas individuales (fila 7) + de dónde sale cada una,
+    # como comentario al pasar el mouse (en vez de fórmulas Excel reales
+    # frágiles, ver nota de diseño en generar_planilla_excel_completa) ---
     columnas = [
-        "N°", "DNI/C. EXT.", "APELLIDOS Y NOMBRES", "GÉNERO",
-        "FECHA DE NACIMIENTO", "CARGO U OCUPACIÓN",
-        "TIPO DE CONTRATO", "FECHA DE INGRESO", "SUELDO BÁSICO",
-        "DÍAS LABORADOS", "TARDANZAS (min)", "HORAS EXTRA (min)",
-        "SUELDO BÁSICO DEL MES", "REM. VACACIONAL", "VACACIONES TRUNCAS",
-        "COMP. VACACIONAL", "DÍA FERIADO/DSCTO", "H. EXTRA 25%",
-        "H. EXTRA 35%", "REINTEGRO", "SUBSIDIOS", "CANASTA NAVIDEÑA",
-        "BONO PRODUCTIVIDAD", "OTROS GRATIF. EXTRAORD.", "MOVILIDAD",
-        "REFRIGERIO", "HERRAMIENTAS", "OTROS CONCEPTOS", "CTS",
-        "GRATIFICACIÓN", "BONIF. EXTRAORD. 9%", "TOTAL REM. BRUTA",
-        "INASISTENCIAS", "TARDANZAS S/", "OTROS DEDUCIBLES", "OTROS",
-        "OTROS DSCTOS", "ADELANTOS", "TOTAL DESCUENTOS",
-        "TIPO APORTACIÓN", "TOTAL ONP", "TOTAL AFP", "RENTA 5TA",
-        "TOTAL RETENCIONES", "NETO A PAGAR", "SCTR", "ESSALUD",
-        "SEGURO VIDA LEY", "COSTO PLANILLA",
+        ("N°", None),
+        ("DNI/C. EXT.", None),
+        ("APELLIDO PATERNO", None),
+        ("APELLIDO MATERNO", None),
+        ("NOMBRES", None),
+        ("GÉNERO", None),
+        ("FECHA DE NACIMIENTO", None),
+        ("EDAD", "= (Hoy − Fecha de Nacimiento) ÷ 365, en años completos."),
+        ("CTA CTE - BANCOS", None),
+        ("ENTIDAD FINANCIERA", None),
+        ("CORREO ELECTRÓNICO", None),
+        ("TIPO DE CONTRATO", None),
+        ("MODALIDAD", None),
+        ("CARGO U OCUPACIÓN", None),
+        ("SUELDO BÁSICO", None),
+        ("FECHA DE INGRESO", None),
+        ("FECHA DE CESE/TÉRMINO", None),
+        ("FECHA FIN DE CONTRATO", None),
+        ("MOTIVO DE BAJA", None),
+        (
+            "CONDICIÓN",
+            "= 'BAJA' si tiene Fecha de Cese, si no 'ACTIVO'.",
+        ),
+        (
+            "PERMANENCIA",
+            "= Tiempo entre Fecha de Ingreso y hoy (o su cese), en"
+            " años/meses/días.",
+        ),
+        (
+            "DÍAS LABORADOS",
+            "= Días del mes con marcación de Entrada válida (Puntual o"
+            " Tardanza), traído de tu asistencia real.",
+        ),
+        (
+            "TARDANZAS (min)",
+            "= Suma de los minutos de tardanza registrados en el mes.",
+        ),
+        (
+            "HORAS EXTRA (min)",
+            "= Suma de los minutos de exceso marcados en el mes"
+            " (solo se pagan si la empresa tiene las horas extra"
+            " activadas).",
+        ),
+        (
+            "SUELDO BÁSICO DEL MES",
+            "= (Sueldo Básico − Rem. Vacacional) ÷ 30 × Días Efectivos"
+            " (Días Laborados menos los minutos de tardanza"
+            " convertidos a fracción de día — jornada de 8h).",
+        ),
+        (
+            "REM. VACACIONAL",
+            "= Sueldo ÷ 30 × Días de Vacaciones Tomadas (dato que"
+            " ingresas en Datos Variables del Período).",
+        ),
+        (
+            "VACACIONES TRUNCAS",
+            "= Sueldo × (días desde el último aniversario de ingreso"
+            " hasta el cese ÷ 360). Automático, solo con Fecha de Cese.",
+        ),
+        ("COMP. VACACIONAL", "Dato manual (Datos Variables del Período)."),
+        ("DÍA FERIADO/DSCTO", "Dato manual (Datos Variables del Período)."),
+        (
+            "H. EXTRA 25%",
+            "= Primeras 2 horas de exceso por día × 1.25 × valor del"
+            " minuto (D.S. N° 007-2002-TR). Automático desde asistencia.",
+        ),
+        (
+            "H. EXTRA 35%",
+            "= Desde la 3ra hora de exceso por día × 1.35 × valor del"
+            " minuto. Automático desde asistencia.",
+        ),
+        ("REINTEGRO", "Dato manual (Datos Variables del Período)."),
+        ("SUBSIDIOS", "Dato manual (Datos Variables del Período)."),
+        ("CANASTA NAVIDEÑA", "Dato manual (Datos Variables del Período)."),
+        ("BONO PRODUCTIVIDAD", "Dato manual (Datos Variables del Período)."),
+        ("OTROS GRATIF. EXTRAORD.", "Dato manual (Datos Variables del Período)."),
+        ("MOVILIDAD", "Dato manual (Datos Variables del Período)."),
+        ("REFRIGERIO", "Dato manual (Datos Variables del Período)."),
+        ("HERRAMIENTAS", "Dato manual (Datos Variables del Período)."),
+        ("OTROS CONCEPTOS", "Dato manual (Datos Variables del Período)."),
+        (
+            "CTS",
+            "= (Sueldo + 1/6 última gratificación + Asig. Familiar) ÷"
+            " 12 × meses del semestre CTS. Automático (mayo/noviembre"
+            " o al cesar).",
+        ),
+        (
+            "GRATIFICACIÓN",
+            "= Sueldo ÷ 6 × meses completos del semestre. Automático"
+            " (julio/diciembre o al cesar). Ley 27735.",
+        ),
+        (
+            "BONIF. EXTRAORD. 9%",
+            "= Gratificación × 9% (o 6.75% si está en EPS). Ley 29351.",
+        ),
+        ("TOTAL REM. BRUTA", "= Suma de todos los ingresos de esta fila."),
+        (
+            "DÍAS DE FALTA",
+            "Dato manual: cuántos días faltó sin justificación (Datos"
+            " Variables del Período).",
+        ),
+        (
+            "INASISTENCIAS S/",
+            "= (Sueldo ÷ 30 × Días de Falta) + descuento del descanso"
+            " dominical proporcional (D.S. N° 012-92-TR).",
+        ),
+        (
+            "TARDANZAS S/",
+            "Solo informativo — ya está reflejado en el Sueldo Básico"
+            " del Mes, no se resta de nuevo aquí.",
+        ),
+        ("OTROS DEDUCIBLES", "Dato manual (Datos Variables del Período)."),
+        ("OTROS (DESC.)", "Dato manual (Datos Variables del Período)."),
+        ("OTROS DSCTOS", "Dato manual (Datos Variables del Período)."),
+        ("ADELANTOS", "Dato manual (Datos Variables del Período)."),
+        (
+            "TOTAL DESCUENTOS",
+            "= Inasistencias + Otros Deducibles + Otros + Otros Dsctos"
+            " + Adelantos.",
+        ),
+        ("TIPO APORTACIÓN", "AFP u ONP (Datos Maestros de Planilla)."),
+        (
+            "TOTAL ONP",
+            "= 13% de la Remuneración Computable (solo si el tipo de"
+            " aportación es ONP).",
+        ),
+        (
+            "TOTAL AFP",
+            "= Aporte Obligatorio (10%) + Comisión + Prima de Seguro,"
+            " con la tasa exacta de la AFP elegida.",
+        ),
+        (
+            "RENTA 5TA",
+            "Aproximación mensual (proyección simple × 14 − 7 UIT, por"
+            " tramos) — no reemplaza el cálculo anual de tu contador.",
+        ),
+        ("TOTAL RETENCIONES", "= Total ONP + Total AFP + Renta 5ta."),
+        (
+            "NETO A PAGAR",
+            "= Total Rem. Bruta − Total Retenciones − Total Descuentos.",
+        ),
+        ("SCTR", "Dato manual (Datos Variables del Período)."),
+        (
+            "ESSALUD",
+            "= 9% de la Remuneración Computable con Subsidios (aporte"
+            " del empleador, no se descuenta al trabajador).",
+        ),
+        ("SEGURO VIDA LEY", "Dato manual (Datos Variables del Período)."),
+        ("TOTAL APORTES", "= SCTR + ESSALUD + Seguro de Vida Ley."),
+        (
+            "COSTO PLANILLA",
+            "= Total Rem. Bruta − (Total Descuentos + Adelantos) +"
+            " Total Aportes.",
+        ),
     ]
-    for idx, nombre_col in enumerate(columnas, start=1):
+    for idx, (nombre_col, explicacion) in enumerate(columnas, start=1):
         c = ws.cell(row=7, column=idx, value=nombre_col)
-        c.font, c.fill = font_header_col, fill_header_col
+        c.font = font_header_col
+        c.fill = fill_navy
         c.alignment = Alignment(
             horizontal="center", vertical="center", wrap_text=True
         )
-    ws.row_dimensions[7].height = 45
-    ws.freeze_panes = "C8"
+        if explicacion:
+            c.comment = Comment(explicacion, "Sistema de Planilla")
+    ws.row_dimensions[7].height = 42
+    # Se congela hasta la columna de NOMBRES (E) incluida — así, al
+    # desplazarte hacia la derecha, siempre ves quién es cada fila.
+    ws.freeze_panes = "F8"
 
     r = 8
     for n_fila, (_, emp) in enumerate(df_empleados.iterrows(), start=1):
@@ -3128,11 +3344,23 @@ def _construir_hoja_planilla(
             st.session_state.permitir_horas_extra,
         )
 
+        fecha_cese_emp = emp.get("fecha_cese", "")
         valores = [
-            n_fila, dni, emp["nombre"], emp.get("genero", ""),
-            emp.get("fecha_nacimiento", ""), emp.get("cargo", ""),
-            emp.get("tipo_contrato", ""), emp.get("fecha_ingreso", ""),
-            float(emp.get("sueldo_basico", 0) or 0),
+            n_fila, dni,
+            emp.get("apellido_paterno", ""), emp.get("apellido_materno", ""),
+            emp.get("nombres", "") or emp["nombre"],
+            emp.get("genero", ""), emp.get("fecha_nacimiento", ""),
+            calcular_edad(emp.get("fecha_nacimiento", "")),
+            emp.get("cta_bancaria", ""), emp.get("banco", ""),
+            emp.get("correo_electronico", ""),
+            emp.get("tipo_contrato", ""), emp.get("modalidad", ""),
+            emp.get("cargo", ""), float(emp.get("sueldo_basico", 0) or 0),
+            emp.get("fecha_ingreso", ""), fecha_cese_emp,
+            emp.get("fecha_fin_contrato", ""), emp.get("motivo_baja", ""),
+            calcular_condicion(fecha_cese_emp),
+            calcular_permanencia_texto(
+                emp.get("fecha_ingreso", ""), fecha_cese_emp
+            ),
             dias_laborados, min_tardanza, min_extra,
             calc["sueldo_basico_mes"], calc["remuneracion_vacacional"],
             calc["vacaciones_truncas"], calc["compensacion_vacacional"],
@@ -3143,24 +3371,44 @@ def _construir_hoja_planilla(
             calc["refrigerio"], calc["herramientas"],
             calc["otros_conceptos"], calc["cts"], calc["gratificacion"],
             calc["bonif_extraordinaria_9"], calc["total_bruta"],
-            calc["inasistencias"], calc["tardanza_equivalente_soles"],
+            calc["dias_falta"], calc["inasistencias"],
+            calc["tardanza_equivalente_soles"],
             calc["otros_deducibles"], calc["otros"], calc["otros_dsctos"],
             calc["adelantos"], calc["total_descuentos"],
             emp.get("tipo_aportacion", ""), calc["total_onp"],
             calc["total_afp"], calc["renta_5ta"],
             calc["total_retenciones"], calc["neto_a_pagar"],
             calc["sctr"], calc["essalud"], calc["seguro_vida_ley"],
-            calc["costo_planilla"],
+            calc["total_aportes"], calc["costo_planilla"],
         ]
         for c_i, valor in enumerate(valores, start=1):
             cell = ws.cell(row=r, column=c_i, value=valor)
             cell.border = border_thin
             cell.font = font_normal
-            if c_i >= 9 and isinstance(valor, (int, float)):
+            if c_i >= 15 and isinstance(valor, (int, float)):
                 cell.number_format = "#,##0.00"
         r += 1
 
-    for col_idx in range(1, len(columnas) + 1):
+    n_columnas = len(columnas)
+
+    # Ocultar (no borrar) las columnas numéricas donde TODOS los
+    # trabajadores dieron 0 — para que la planilla se vea más limpia
+    # sin perder el dato por si se necesita después.
+    columnas_no_ocultables = set(range(1, 22))  # datos de identificación/
+    # contrato: nunca se ocultan aunque den 0 (N° a PERMANENCIA)
+    for col_idx in range(1, n_columnas + 1):
+        if col_idx in columnas_no_ocultables or r <= 8:
+            continue
+        valores_col = [
+            ws.cell(row=rr, column=col_idx).value for rr in range(8, r)
+        ]
+        if all(
+            (v is None or v == "" or (isinstance(v, (int, float)) and v == 0))
+            for v in valores_col
+        ):
+            ws.column_dimensions[get_column_letter(col_idx)].hidden = True
+
+    for col_idx in range(1, n_columnas + 1):
         max_len = max(
             (
                 len(str(ws.cell(row=rr, column=col_idx).value or ""))
@@ -3172,7 +3420,7 @@ def _construir_hoja_planilla(
             max_len + 2, 10
         )
 
-    ws.auto_filter.ref = f"A7:{get_column_letter(len(columnas))}{r - 1}"
+    ws.auto_filter.ref = f"A7:{get_column_letter(n_columnas)}{r - 1}"
     ws.page_setup.orientation = "landscape"
     ws.page_setup.fitToWidth = 1
     ws.page_setup.fitToHeight = 0
@@ -3194,6 +3442,7 @@ def _obtener_datos_empresa(df_empresas):
         fila_empresa.iloc[0].get("razon_social", "")
         if not fila_empresa.empty
         else st.session_state.empresa_id
+
     )
     ruc = fila_empresa.iloc[0].get("ruc", "") if not fila_empresa.empty else ""
     return razon_social, ruc
@@ -3230,12 +3479,16 @@ def generar_planilla_excel_completa(
 def generar_planilla_excel_anual(
     df_empleados, df_asistencia, df_empresas, anio_sel, supabase
 ):
-    """Genera un solo Excel con 12 pestañas (una por mes de 'anio_sel'),
-    cada una con el mismo formato completo de la planilla mensual."""
+    """Genera un solo Excel con una pestaña por cada mes de 'anio_sel'
+    que ya haya transcurrido (si el año elegido es el actual, no genera
+    pestañas de meses futuros que todavía no tienen datos; si es un año
+    anterior, genera los 12)."""
     razon_social, ruc = _obtener_datos_empresa(df_empresas)
+    hoy = ahora_peru()
+    ultimo_mes = 12 if anio_sel < hoy.year else hoy.month
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
-    for mes in range(1, 13):
+    for mes in range(1, ultimo_mes + 1):
         ws = wb.create_sheet(title=MESES_NOMBRES[mes][:31])
         _construir_hoja_planilla(
             ws, df_empleados, df_asistencia, razon_social, ruc, mes,
@@ -5672,6 +5925,23 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                         e_nombre = st.text_input("Nombre Completo:", value=val_nom)
                         e_cargo = st.text_input("Cargo:", value=val_car)
 
+                        val_fecha_ing = (
+                            str(datos_e.get("fecha_ingreso", ""))
+                            if is_edit_e
+                            else hoy_peru().strftime("%Y-%m-%d")
+                        )
+                        e_fecha_ingreso = st.text_input(
+                            "Fecha de Ingreso (AAAA-MM-DD):",
+                            value=val_fecha_ing,
+                            help=(
+                                "La fecha real en que el trabajador"
+                                " empezó a laborar. Se usa para calcular"
+                                " su antigüedad, gratificación, CTS y"
+                                " vacaciones — es importante que sea"
+                                " exacta."
+                            ),
+                        )
+
                         idx_sede_default = (
                             sedes_lista.index(val_sed_p)
                             if val_sed_p in sedes_lista
@@ -5726,6 +5996,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                         "sedes_autorizadas": json.dumps(
                                             sedes_finales
                                         ),
+                                        "fecha_ingreso": e_fecha_ingreso.strip(),
                                     }
                                     if e_pass.strip():
                                         # Solo se toca la contraseña si el
@@ -5843,7 +6114,8 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                                 ),
                                                 "horario_personalizado": "{}",
                                                 "fecha_ingreso": (
-                                                    hoy_peru().strftime(
+                                                    e_fecha_ingreso.strip()
+                                                    or hoy_peru().strftime(
                                                         "%Y-%m-%d"
                                                     )
                                                 ),
@@ -6710,114 +6982,184 @@ elif opcion == "🔐 Panel de Gestión / Admin":
 
                 prefix_periodo_planilla = f"{anio_planilla}-{mes_planilla:02d}"
 
-                filas_planilla = []
-                for _, emp in df_empleados.iterrows():
-                    emp_asist = df_asistencia[
-                        df_asistencia["Empleado"] == emp["nombre"]
-                    ]
-                    emp_asist_mes = (
-                        emp_asist[
-                            emp_asist["Fecha"]
-                            .astype(str)
-                            .str.startswith(prefix_periodo_planilla)
-                        ]
-                        if not emp_asist.empty
-                        else pd.DataFrame()
-                    )
-
-                    tardanzas = (
-                        emp_asist_mes[emp_asist_mes["Estado"] == "Tardanza"][
-                            "Fecha"
-                        ].nunique()
-                        if not emp_asist_mes.empty
-                        else 0
-                    )
-                    puntuales = (
-                        emp_asist_mes[emp_asist_mes["Estado"] == "Puntual"][
-                            "Fecha"
-                        ].nunique()
-                        if not emp_asist_mes.empty
-                        else 0
-                    )
-                    min_tard = (
-                        emp_asist_mes["Minutos Tardanza"].sum()
-                        if not emp_asist_mes.empty
-                        else 0
-                    )
-                    min_extra = (
-                        emp_asist_mes["Horas Extra (min)"].sum()
-                        if not emp_asist_mes.empty
-                        else 0
-                    )
-
-                    filas_planilla.append({
-                        "DNI": emp["dni"],
-                        "Empleado": emp["nombre"],
-                        "Cargo": emp["cargo"],
-                        "Fecha Ingreso": emp.get("fecha_ingreso", ""),
-                        "Días Laborados": puntuales + tardanzas,
-                        "Tardanzas": tardanzas,
-                        "Min. Tardanza": int(min_tard),
-                        "Horas Extra (min)": int(min_extra),
-                    })
-
-                df_planilla_vista = pd.DataFrame(filas_planilla)
-
-                col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-                with col_m1:
-                    st.metric(
-                        "Trabajadores", len(df_planilla_vista)
-                    )
-                with col_m2:
-                    st.metric(
-                        "Total Días Laborados",
-                        int(df_planilla_vista["Días Laborados"].sum())
-                        if not df_planilla_vista.empty
-                        else 0,
-                    )
-                with col_m3:
-                    st.metric(
-                        "Total Tardanzas",
-                        int(df_planilla_vista["Tardanzas"].sum())
-                        if not df_planilla_vista.empty
-                        else 0,
-                    )
-                with col_m4:
-                    st.metric(
-                        "Total Horas Extra (min)",
-                        int(df_planilla_vista["Horas Extra (min)"].sum())
-                        if not df_planilla_vista.empty
-                        else 0,
-                    )
-
                 st.write("")
                 with st.container(border=True):
-                    busqueda_planilla = st.text_input(
-                        "🔎 Buscar trabajador por nombre o DNI:",
-                        value="",
+                    st.markdown("### 🔎 Vista Previa de la Planilla")
+                    st.caption(
+                        "Elige un trabajador para ver, en vivo, cómo se"
+                        " está armando su planilla de este período — y de"
+                        " dónde sale cada número. Solo se muestran los"
+                        " conceptos que tienen algún valor."
                     )
 
-                    df_mostrar_planilla = df_planilla_vista.copy()
-                    if busqueda_planilla.strip():
-                        termino = busqueda_planilla.strip().upper()
-                        df_mostrar_planilla = df_mostrar_planilla[
-                            df_mostrar_planilla["Empleado"]
-                            .str.upper()
-                            .str.contains(termino)
-                            | df_mostrar_planilla["DNI"]
-                            .astype(str)
-                            .str.contains(termino)
+                    if df_empleados.empty:
+                        st.info("Todavía no hay trabajadores registrados.")
+                    else:
+                        emp_preview_sel = st.selectbox(
+                            "Trabajador:",
+                            df_empleados["nombre"].tolist(),
+                            key="emp_preview_planilla",
+                        )
+                        fila_prev = df_empleados[
+                            df_empleados["nombre"] == emp_preview_sel
+                        ].iloc[0]
+                        dni_prev = str(fila_prev["dni"])
+
+                        emp_asist_prev = df_asistencia[
+                            df_asistencia["Empleado"] == emp_preview_sel
+                        ]
+                        emp_asist_prev_mes = (
+                            emp_asist_prev[
+                                emp_asist_prev["Fecha"]
+                                .astype(str)
+                                .str.startswith(prefix_periodo_planilla)
+                            ]
+                            if not emp_asist_prev.empty
+                            else pd.DataFrame()
+                        )
+                        tardanzas_prev = (
+                            emp_asist_prev_mes[
+                                emp_asist_prev_mes["Estado"] == "Tardanza"
+                            ]["Fecha"].nunique()
+                            if not emp_asist_prev_mes.empty
+                            else 0
+                        )
+                        puntuales_prev = (
+                            emp_asist_prev_mes[
+                                emp_asist_prev_mes["Estado"] == "Puntual"
+                            ]["Fecha"].nunique()
+                            if not emp_asist_prev_mes.empty
+                            else 0
+                        )
+                        dias_lab_prev = puntuales_prev + tardanzas_prev
+                        min_tard_prev = (
+                            int(emp_asist_prev_mes["Minutos Tardanza"].sum())
+                            if not emp_asist_prev_mes.empty
+                            else 0
+                        )
+                        min_extra_dia_prev = (
+                            emp_asist_prev_mes.groupby("Fecha")[
+                                "Horas Extra (min)"
+                            ].sum().tolist()
+                            if not emp_asist_prev_mes.empty
+                            else []
+                        )
+
+                        periodo_bd_prev = (
+                            cargar_planilla_periodo_supabase(
+                                supabase, st.session_state.empresa_id,
+                                dni_prev, prefix_periodo_planilla,
+                            )
+                            or {}
+                        )
+                        calc_prev = calcular_planilla_trabajador(
+                            fila_prev, dias_lab_prev, min_tard_prev,
+                            min_extra_dia_prev, periodo_bd_prev,
+                            mes_planilla, anio_planilla,
+                            st.session_state.permitir_horas_extra,
+                        )
+
+                        colp1, colp2, colp3, colp4 = st.columns(4)
+                        colp1.metric(
+                            "💰 Total Bruta",
+                            f"S/ {calc_prev['total_bruta']:.2f}",
+                        )
+                        colp2.metric(
+                            "➖ Descuentos",
+                            f"S/ {calc_prev['total_descuentos']:.2f}",
+                        )
+                        colp3.metric(
+                            "🏦 Retenciones",
+                            f"S/ {calc_prev['total_retenciones']:.2f}",
+                        )
+                        colp4.metric(
+                            "✅ Neto a Pagar",
+                            f"S/ {calc_prev['neto_a_pagar']:.2f}",
+                        )
+
+                        _explic_ingresos = [
+                            ("sueldo_basico_mes", "Sueldo Básico del Mes", "(Sueldo − Rem. Vacacional) ÷ 30 × Días Efectivos (ya descontando minutos de tardanza)."),
+                            ("remuneracion_vacacional", "Remuneración Vacacional", "Sueldo ÷ 30 × Días de Vacaciones Tomadas que ingresaste."),
+                            ("vacaciones_truncas", "Vacaciones Truncas", "Automático: solo si el trabajador tiene Fecha de Cese este mes."),
+                            ("compensacion_vacacional", "Compensación Vacacional", "Dato que ingresaste manualmente."),
+                            ("dia_feriado_descanso", "Día Feriado/Descanso", "Dato que ingresaste manualmente."),
+                            ("horas_extra_25", "Horas Extra 25%", "Automático: primeras 2 horas de exceso por día, desde tu asistencia real."),
+                            ("horas_extra_35", "Horas Extra 35%", "Automático: desde la 3ra hora de exceso por día."),
+                            ("reintegro", "Reintegro", "Dato que ingresaste manualmente."),
+                            ("subsidios", "Subsidios", "Dato que ingresaste manualmente."),
+                            ("canasta_navidena", "Canasta Navideña", "Dato que ingresaste manualmente."),
+                            ("bono_productividad", "Bono de Productividad", "Dato que ingresaste manualmente."),
+                            ("otros_gratif_extraord", "Otros - Gratif. Extraordinaria", "Dato que ingresaste manualmente."),
+                            ("movilidad", "Movilidad", "Dato que ingresaste manualmente."),
+                            ("refrigerio", "Refrigerio", "Dato que ingresaste manualmente."),
+                            ("herramientas", "Herramientas", "Dato que ingresaste manualmente."),
+                            ("otros_conceptos", "Otros Conceptos", "Dato que ingresaste manualmente."),
+                            ("cts", "CTS", "Automático: se activa sola en mayo/noviembre, o al cesar."),
+                            ("gratificacion", "Gratificación", "Automático: se activa sola en julio/diciembre, o al cesar (Ley 27735)."),
+                            ("bonif_extraordinaria_9", "Bonif. Extraordinaria 9%", "Automático: 9% (o 6.75% en EPS) de la Gratificación de arriba."),
+                        ]
+                        _explic_descuentos = [
+                            ("dias_falta", "Días de Falta registrados", "Dato que ingresaste manualmente (en días, no en soles)."),
+                            ("inasistencias", "Descuento por Inasistencias", "Automático: día no laborado + descanso dominical proporcional (D.S. N° 012-92-TR)."),
+                            ("otros_deducibles", "Otros Deducibles", "Dato que ingresaste manualmente."),
+                            ("otros", "Otros", "Dato que ingresaste manualmente."),
+                            ("otros_dsctos", "Otros Descuentos", "Dato que ingresaste manualmente."),
+                            ("adelantos", "Adelantos", "Dato que ingresaste manualmente."),
+                        ]
+                        _explic_retenciones = [
+                            ("total_onp", "Total ONP", "Automático: 13% de la Remuneración Computable (solo si aporta a ONP)."),
+                            ("total_afp", "Total AFP", "Automático: Aporte Obligatorio + Comisión + Prima, con la tasa exacta de su AFP."),
+                            ("renta_5ta", "Renta de 5ta", "Aproximación automática — no reemplaza el cálculo anual de tu contador."),
+                        ]
+                        _explic_aportes = [
+                            ("sctr", "SCTR", "Dato que ingresaste manualmente."),
+                            ("essalud", "ESSALUD", "Automático: 9% de la Remuneración Computable con Subsidios."),
+                            ("seguro_vida_ley", "Seguro de Vida Ley", "Dato que ingresaste manualmente."),
                         ]
 
-                    st.dataframe(
-                        df_mostrar_planilla,
-                        use_container_width=True,
-                        hide_index=True,
-                    )
+                        def _mostrar_bloque_explicado(titulo, lista_campos, calc_dict):
+                            filas_con_valor = [
+                                (etiqueta, calc_dict.get(campo, 0), expl)
+                                for campo, etiqueta, expl in lista_campos
+                                if calc_dict.get(campo, 0)
+                            ]
+                            if not filas_con_valor:
+                                st.caption(
+                                    f"Sin conceptos de {titulo.lower()} este"
+                                    " período."
+                                )
+                                return
+                            for etiqueta, valor, expl in filas_con_valor:
+                                st.markdown(
+                                    f"**{etiqueta}: S/ {valor:.2f}**"
+                                )
+                                st.caption(f"↳ {expl}")
+
+                        tab_ing, tab_desc, tab_ret, tab_apo = st.tabs([
+                            "💵 Ingresos", "➖ Descuentos",
+                            "🏦 Retenciones", "🏢 Aportes Empleador",
+                        ])
+                        with tab_ing:
+                            _mostrar_bloque_explicado(
+                                "ingresos", _explic_ingresos, calc_prev
+                            )
+                        with tab_desc:
+                            _mostrar_bloque_explicado(
+                                "descuentos", _explic_descuentos, calc_prev
+                            )
+                        with tab_ret:
+                            _mostrar_bloque_explicado(
+                                "retenciones", _explic_retenciones, calc_prev
+                            )
+                        with tab_apo:
+                            _mostrar_bloque_explicado(
+                                "aportes", _explic_aportes, calc_prev
+                            )
 
                 st.divider()
                 with st.expander(
                     "📝 Datos Maestros de Planilla (llenar una vez por"
+
                     " trabajador)"
                 ):
                     st.caption(
@@ -6877,13 +7219,16 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                             dp_ap_pat = st.text_input(
                                 "Apellido Paterno:",
                                 value=_val_dp("apellido_paterno"),
+                                help="Tal como figura en su DNI.",
                             )
                             dp_ap_mat = st.text_input(
                                 "Apellido Materno:",
                                 value=_val_dp("apellido_materno"),
+                                help="Tal como figura en su DNI.",
                             )
                             dp_nombres = st.text_input(
-                                "Nombres:", value=_val_dp("nombres")
+                                "Nombres:", value=_val_dp("nombres"),
+                                help="Solo los nombres, sin apellidos.",
                             )
                             dp_genero = st.selectbox(
                                 "Género:",
@@ -6892,24 +7237,36 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     ["", "FEMENINO", "MASCULINO"],
                                     _val_dp("genero"),
                                 ),
+                                help="Se usa para los reportes de planilla.",
                             )
                         with col_dp2:
                             dp_f_nac = st.text_input(
                                 "Fecha de Nacimiento (DD/MM/AAAA):",
                                 value=_val_dp("fecha_nacimiento"),
+                                help=(
+                                    "Se usa para calcular automáticamente"
+                                    " la edad del trabajador en el"
+                                    " reporte de planilla."
+                                ),
                             )
                             dp_cta = st.text_input(
                                 "Cuenta Bancaria (CCI):",
                                 value=_val_dp("cta_bancaria"),
+                                help=(
+                                    "Número de cuenta interbancario (CCI)"
+                                    " donde se le deposita el sueldo."
+                                ),
                             )
                             dp_banco = st.selectbox(
                                 "Banco:",
                                 BANCOS_LISTA,
                                 index=_idx(BANCOS_LISTA, _val_dp("banco")),
+                                help="El banco donde tiene su cuenta de sueldo.",
                             )
                             dp_correo = st.text_input(
                                 "Correo Electrónico:",
                                 value=_val_dp("correo_electronico"),
+                                help="Opcional, solo para tus registros.",
                             )
                         with col_dp3:
                             dp_tipo_contrato = st.selectbox(
@@ -6919,6 +7276,11 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     TIPO_CONTRATO_LISTA,
                                     _val_dp("tipo_contrato"),
                                 ),
+                                help=(
+                                    "El régimen bajo el que fue"
+                                    " contratado (indeterminado, plazo"
+                                    " fijo, etc.)."
+                                ),
                             )
                             dp_modalidad = st.selectbox(
                                 "Modalidad:",
@@ -6927,12 +7289,18 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     ["", "PRESENCIAL", "REMOTO", "MIXTO"],
                                     _val_dp("modalidad"),
                                 ),
+                                help="Cómo trabaja habitualmente.",
                             )
                             dp_sueldo = st.number_input(
                                 "Sueldo Básico (S/):",
                                 min_value=0.0,
                                 value=float(_val_dp("sueldo_basico", 0.0)),
                                 step=50.0,
+                                help=(
+                                    "El sueldo mensual pactado, SIN bonos"
+                                    " ni horas extra — es la base de casi"
+                                    " todos los cálculos de la planilla."
+                                ),
                             )
                             dp_tipo_aport = st.selectbox(
                                 "Tipo de Aportación:",
@@ -6940,6 +7308,11 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 index=_idx(
                                     ["", "AFP", "ONP"],
                                     _val_dp("tipo_aportacion"),
+                                ),
+                                help=(
+                                    "Si aporta a una AFP privada o a la"
+                                    " ONP (sistema nacional de"
+                                    " pensiones)."
                                 ),
                             )
 
@@ -6951,6 +7324,13 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 index=_idx(
                                     AFP_TIPO_LISTA, _val_dp("afp_tipo")
                                 ),
+                                help=(
+                                    "Solo si eligió \"AFP\" arriba. FLUJO"
+                                    " o MIXTA es la comisión que paga a"
+                                    " su AFP — lo dice en su boleta"
+                                    " anterior o se lo puedes preguntar"
+                                    " directamente."
+                                ),
                             )
                         with col_dp5:
                             dp_exclusion = st.selectbox(
@@ -6961,6 +7341,13 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     EXCLUSION_AFP_LISTA,
                                     _val_dp("exclusion_afp"),
                                 ),
+                                help=(
+                                    "Úsalo solo si el trabajador está"
+                                    " exonerado de aportar por algún"
+                                    " motivo especial (ya está jubilado,"
+                                    " tiene invalidez, etc.). Si aporta"
+                                    " normal, déjalo en blanco."
+                                ),
                             )
                         with col_dp6:
                             dp_motivo_baja = st.selectbox(
@@ -6970,13 +7357,42 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     MOTIVO_BAJA_LISTA,
                                     _val_dp("motivo_baja"),
                                 ),
+                                help=(
+                                    "Solo si el trabajador ya no está"
+                                    " activo — por qué se fue."
+                                ),
                             )
 
-                        dp_f_cese = st.text_input(
-                            "Fecha de Cese (dejar en blanco si sigue"
-                            " activo):",
-                            value=_val_dp("fecha_cese"),
-                        )
+                        col_dp7, col_dp8 = st.columns(2)
+                        with col_dp7:
+                            dp_f_cese = st.text_input(
+                                "Fecha de Cese (dejar en blanco si sigue"
+                                " activo):",
+                                value=_val_dp("fecha_cese"),
+                                help=(
+                                    "El día en que el trabajador dejó de"
+                                    " laborar. Al ponerla, el sistema"
+                                    " calcula solo su liquidación:"
+                                    " gratificación y CTS truncas,"
+                                    " vacaciones truncas — no necesitas"
+                                    " calcular nada de eso a mano."
+                                ),
+                            )
+                        with col_dp8:
+                            dp_f_fin_contrato = st.text_input(
+                                "Fecha Fin de Contrato (solo si es a"
+                                " plazo fijo):",
+                                value=_val_dp("fecha_fin_contrato"),
+                                help=(
+                                    "Solo aplica si el \"Tipo de"
+                                    " Contrato\" tiene fecha de"
+                                    " vencimiento (no es indeterminado)."
+                                    " Es informativo, no dispara ningún"
+                                    " cálculo — el que sí afecta los"
+                                    " cálculos es \"Fecha de Cese\","
+                                    " arriba."
+                                ),
+                            )
 
                         if st.button(
                             "💾 Guardar Datos de Planilla", type="primary"
@@ -6999,6 +7415,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 "afp_tipo": dp_afp_tipo,
                                 "exclusion_afp": dp_exclusion,
                                 "fecha_cese": dp_f_cese.strip(),
+                                "fecha_fin_contrato": dp_f_fin_contrato.strip(),
                                 "motivo_baja": dp_motivo_baja,
                             }
                             if supabase:
@@ -7129,18 +7546,36 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 min_value=0.0,
                                 value=_v("adelantos"),
                                 key="v_adelantos",
+                                help=(
+                                    "Dinero que ya le adelantaste al"
+                                    " trabajador este período — se"
+                                    " descuenta de su neto a pagar."
+                                ),
                             )
                             v_otros_dsctos = st.number_input(
                                 "Otros Descuentos (S/):",
                                 min_value=0.0,
                                 value=_v("otros_dsctos"),
                                 key="v_otros_dsctos",
+                                help=(
+                                    "Cualquier otro descuento que no"
+                                    " tenga su propio campo."
+                                ),
                             )
-                            v_inasist = st.number_input(
-                                "Inasistencias (S/):",
-                                min_value=0.0,
-                                value=_v("inasistencias"),
-                                key="v_inasist",
+                            v_dias_falta = st.number_input(
+                                "Días de Falta (inasistencias):",
+                                min_value=0, max_value=31, step=1,
+                                value=int(_v("dias_falta")),
+                                key="v_dias_falta",
+                                help=(
+                                    "Días que el trabajador faltó sin"
+                                    " justificación. El sistema calcula"
+                                    " solo el descuento: el día no"
+                                    " laborado MÁS el descanso dominical"
+                                    " proporcional que también se pierde"
+                                    " por ley (D.S. N° 012-92-TR) — no"
+                                    " tienes que sacar esa cuenta."
+                                ),
                             )
                         with col_v2:
                             v_bono_prod = st.number_input(
@@ -7148,6 +7583,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 min_value=0.0,
                                 value=_v("bono_productividad"),
                                 key="v_bono_prod",
+                                help="Cualquier bono variable por desempeño.",
                             )
                             v_hextra25 = st.number_input(
                                 "Horas Extra 25% (S/, calculado automático"
@@ -7155,6 +7591,12 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 min_value=0.0,
                                 value=_v("horas_extra_25", _hextra25_sug),
                                 key="v_hextra25",
+                                help=(
+                                    "Las primeras 2 horas de exceso por"
+                                    " día, según ley (D.S. N°"
+                                    " 007-2002-TR). Ya viene calculado"
+                                    " solo desde la asistencia real."
+                                ),
                             )
                             v_hextra35 = st.number_input(
                                 "Horas Extra 35% (S/, calculado automático"
@@ -7162,6 +7604,11 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 min_value=0.0,
                                 value=_v("horas_extra_35", _hextra35_sug),
                                 key="v_hextra35",
+                                help=(
+                                    "Desde la 3ra hora de exceso en el"
+                                    " mismo día en adelante, según ley."
+                                    " También calculado solo."
+                                ),
                             )
                         if not st.session_state.permitir_horas_extra:
                             st.caption(
@@ -7187,12 +7634,24 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 min_value=0.0,
                                 value=_v("gratificacion", _gratif_sug),
                                 key="v_gratif",
+                                help=(
+                                    "Solo aparece en julio y diciembre"
+                                    " (o antes, si hay una fecha de"
+                                    " cese). Se calcula sola con la"
+                                    " fórmula legal — no necesitas"
+                                    " tocarla salvo que algo esté mal."
+                                ),
                             )
                             v_cts = st.number_input(
                                 "CTS (S/):",
                                 min_value=0.0,
                                 value=_v("cts", _cts_sug),
                                 key="v_cts",
+                                help=(
+                                    "Solo aparece en mayo y noviembre (o"
+                                    " antes, si hay cese). También se"
+                                    " calcula sola."
+                                ),
                             )
                         with col_v4:
                             v_vac_truncas = st.number_input(
@@ -7200,6 +7659,13 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 min_value=0.0,
                                 value=_v("vacaciones_truncas", _vactruncas_sug),
                                 key="v_vac_truncas",
+                                help=(
+                                    "Solo aparece si el trabajador tiene"
+                                    " una Fecha de Cese este mes"
+                                    " (liquidación). Se calcula sola"
+                                    " según cuánto le falta para su"
+                                    " próximo aniversario de ingreso."
+                                ),
                             )
 
                         with st.expander(
@@ -7247,12 +7713,23 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     min_value=0.0,
                                     value=_v("compensacion_vacacional"),
                                     key="v_comp_vac",
+                                    help=(
+                                        "Cuando se le paga en dinero en"
+                                        " vez de darle los días libres"
+                                        " (poco común, solo con acuerdo"
+                                        " escrito)."
+                                    ),
                                 )
                                 v_feriado = st.number_input(
                                     "Día Feriado/Descanso (S/):",
                                     min_value=0.0,
                                     value=_v("dia_feriado_descanso"),
                                     key="v_feriado",
+                                    help=(
+                                        "Si trabajó un feriado o su día de"
+                                        " descanso, el pago extra por ese"
+                                        " día."
+                                    ),
                                 )
                             with col_v6:
                                 v_reintegro = st.number_input(
@@ -7260,18 +7737,29 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     min_value=0.0,
                                     value=_v("reintegro"),
                                     key="v_reintegro",
+                                    help=(
+                                        "Un pago pendiente de un período"
+                                        " anterior que se le abona ahora."
+                                    ),
                                 )
                                 v_subsidios = st.number_input(
                                     "Subsidios (S/):",
                                     min_value=0.0,
                                     value=_v("subsidios"),
                                     key="v_subsidios",
+                                    help=(
+                                        "Pagos de EsSalud por descanso"
+                                        " médico (no los paga la"
+                                        " empresa, pero se registran"
+                                        " aquí)."
+                                    ),
                                 )
                                 v_canasta = st.number_input(
                                     "Canasta Navideña (S/):",
                                     min_value=0.0,
                                     value=_v("canasta_navidena"),
                                     key="v_canasta",
+                                    help="Si le das canasta u obsequio en soles.",
                                 )
                             with col_v7:
                                 v_otros_gratif = st.number_input(
@@ -7279,18 +7767,25 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     min_value=0.0,
                                     value=_v("otros_gratif_extraord"),
                                     key="v_otros_gratif",
+                                    help=(
+                                        "Un bono extra por mutuo acuerdo"
+                                        " al terminar la relación laboral"
+                                        " (mutuo disenso), si aplica."
+                                    ),
                                 )
                                 v_movilidad = st.number_input(
                                     "Movilidad (S/):",
                                     min_value=0.0,
                                     value=_v("movilidad"),
                                     key="v_movilidad",
+                                    help="Pasajes o combustible que le reconoces.",
                                 )
                                 v_refrigerio = st.number_input(
                                     "Refrigerio (S/):",
                                     min_value=0.0,
                                     value=_v("refrigerio"),
                                     key="v_refrigerio",
+                                    help="Almuerzo o refrigerio que le das en soles.",
                                 )
 
                             col_v8, col_v9 = st.columns(2)
@@ -7300,18 +7795,29 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     min_value=0.0,
                                     value=_v("herramientas"),
                                     key="v_herramientas",
+                                    help=(
+                                        "Si le das dinero para comprar"
+                                        " sus propias herramientas de"
+                                        " trabajo."
+                                    ),
                                 )
                                 v_otros_conc = st.number_input(
                                     "Otros Conceptos Supeditados (S/):",
                                     min_value=0.0,
                                     value=_v("otros_conceptos"),
                                     key="v_otros_conc",
+                                    help="Cualquier otro ingreso que no tenga campo propio.",
                                 )
                                 v_otros_deduc = st.number_input(
                                     "Otros Deducibles Base Imponible (S/):",
                                     min_value=0.0,
                                     value=_v("otros_deducibles"),
                                     key="v_otros_deduc",
+                                    help=(
+                                        "Un descuento que SÍ afecta el"
+                                        " cálculo de AFP/ONP (poco común"
+                                        " — si no sabes, déjalo en 0)."
+                                    ),
                                 )
                             with col_v9:
                                 v_otros = st.number_input(
@@ -7319,18 +7825,34 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     min_value=0.0,
                                     value=_v("otros"),
                                     key="v_otros",
+                                    help="Cualquier otro descuento suelto.",
                                 )
                                 v_sctr = st.number_input(
                                     "SCTR (S/):",
                                     min_value=0.0,
                                     value=_v("sctr"),
                                     key="v_sctr",
+                                    help=(
+                                        "Seguro Complementario de Trabajo"
+                                        " de Riesgo — solo si tu empresa"
+                                        " está obligada a tenerlo"
+                                        " (actividades de riesgo). Lo"
+                                        " paga la empresa, no el"
+                                        " trabajador."
+                                    ),
                                 )
                                 v_seguro_vida = st.number_input(
                                     "Seguro de Vida Ley (S/):",
                                     min_value=0.0,
                                     value=_v("seguro_vida_ley"),
                                     key="v_seguro_vida",
+                                    help=(
+                                        "La prima mensual que le pagas a"
+                                        " tu aseguradora por el Seguro de"
+                                        " Vida Ley de este trabajador —"
+                                        " revisa tu póliza para el monto"
+                                        " exacto."
+                                    ),
                                 )
 
                         if st.button(
@@ -7358,7 +7880,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 "gratificacion": v_gratif,
                                 "horas_extra_25": v_hextra25,
                                 "horas_extra_35": v_hextra35,
-                                "inasistencias": v_inasist,
+                                "dias_falta": v_dias_falta,
                                 "otros_deducibles": v_otros_deduc,
                                 "otros": v_otros,
                                 "otros_dsctos": v_otros_dsctos,
