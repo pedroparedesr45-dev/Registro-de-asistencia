@@ -366,7 +366,143 @@ ubicación GPS con la única finalidad descrita.
 """
 
 
-def render_gate_consentimiento(supabase, datos_emp):
+def render_animacion_verificando(logo_url):
+    """Animación corta (tipo Lottie) que se muestra justo después de un
+    login exitoso, antes de pasar a la pantalla de consentimiento o de
+    marcar — un anillo con degradado cyan-violeta que se dibuja solo
+    alrededor del logo de la empresa, con un beep corto al terminar."""
+    html = f"""
+    <div style="position:fixed; inset:0; z-index:9998;
+        background:rgba(10,14,26,0.94); display:flex;
+        flex-direction:column; align-items:center; justify-content:center;">
+        <div style="position:relative; width:110px; height:110px;">
+            <svg width="110" height="110" viewBox="0 0 110 110"
+                style="position:absolute; top:0; left:0;">
+                <circle cx="55" cy="55" r="42" fill="none"
+                    stroke="rgba(255,255,255,0.12)" stroke-width="5"/>
+                <circle cx="55" cy="55" r="42" fill="none"
+                    stroke="url(#fac-grad-verif)" stroke-width="5"
+                    stroke-linecap="round" stroke-dasharray="264"
+                    stroke-dashoffset="264" transform="rotate(-90 55 55)"
+                    style="animation:fac-anillo-verif 0.9s ease forwards;"/>
+                <defs>
+                    <linearGradient id="fac-grad-verif" x1="0" y1="0" x2="1" y2="1">
+                        <stop offset="0%" stop-color="#58a6ff"/>
+                        <stop offset="100%" stop-color="#a371f7"/>
+                    </linearGradient>
+                </defs>
+            </svg>
+            <img src="{logo_url}" style="position:absolute; top:20px; left:20px;
+                width:70px; height:70px; object-fit:contain; border-radius:50%;
+                opacity:0; animation:fac-logo-in-verif 0.4s ease 0.75s forwards;"/>
+        </div>
+        <div style="color:#8b949e; font-size:13px; margin-top:14px;
+            font-family:'Space Grotesk',sans-serif;">
+            Verificando identidad...
+        </div>
+    </div>
+    <style>
+    @keyframes fac-anillo-verif {{ to {{ stroke-dashoffset: 0; }} }}
+    @keyframes fac-logo-in-verif {{ to {{ opacity:1; }} }}
+    </style>
+    <script>
+    (function(){{
+        try{{
+            var ctx = new (window.AudioContext||window.webkitAudioContext)();
+            var o=ctx.createOscillator(), g=ctx.createGain();
+            o.type='sine'; o.frequency.value=880;
+            g.gain.setValueAtTime(0.12, ctx.currentTime);
+            g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime+0.15);
+            o.connect(g); g.connect(ctx.destination);
+            o.start(); o.stop(ctx.currentTime+0.15);
+        }}catch(e){{}}
+    }})();
+    </script>
+    """
+    render_html(html)
+
+
+def render_animacion_marcado_exitoso(logo_url, hora_texto):
+    """Reemplaza la antigua animación de 'globos': un sello con el logo
+    de la empresa cae con rebote elástico + doble beep tipo 'thump' +
+    confetti cyan/violeta detrás — todo se desvanece solo en ~2.2 seg.
+    No requiere ningún archivo de audio (los tonos se generan con Web
+    Audio API), y usa canvas-confetti desde CDN para las partículas."""
+    html = f"""
+    <div id="fac-capa-sello" style="position:fixed; inset:0; z-index:9998;
+        display:flex; align-items:center; justify-content:center;
+        background:rgba(10,14,26,0.5); pointer-events:none;">
+        <div id="fac-sello" style="width:220px; height:220px; border-radius:50%;
+            border:6px solid #58a6ff; background:radial-gradient(circle,
+            rgba(88,166,255,0.18), rgba(163,113,247,0.10));
+            display:flex; flex-direction:column; align-items:center;
+            justify-content:center; box-shadow:0 0 40px rgba(88,166,255,0.6),
+            0 0 80px rgba(163,113,247,0.3); transform:scale(2.2) rotate(-18deg);
+            opacity:0;">
+            <img src="{logo_url}" style="width:44px; height:44px; object-fit:contain;
+                border-radius:50%; background:rgba(255,255,255,0.9);
+                margin-bottom:8px;"/>
+            <div style="font-size:22px; font-weight:700; color:#58a6ff;
+                letter-spacing:1px; font-family:'Space Grotesk',sans-serif;">
+                MARCADO
+            </div>
+            <div style="font-size:12px; color:#a371f7; margin-top:2px;
+                font-family:'Space Grotesk',sans-serif;">
+                {hora_texto} ✓
+            </div>
+        </div>
+    </div>
+    <canvas id="fac-canvas-confetti" style="position:fixed; inset:0; z-index:9997;
+        pointer-events:none; width:100%; height:100%;"></canvas>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/canvas-confetti/1.9.2/confetti.browser.min.js"></script>
+    <script>
+    (function(){{
+        function tono(freq, dur, delay){{
+            setTimeout(function(){{
+                try{{
+                    var ctx = new (window.AudioContext||window.webkitAudioContext)();
+                    var o=ctx.createOscillator(), g=ctx.createGain();
+                    o.type='sine'; o.frequency.value=freq;
+                    g.gain.setValueAtTime(0.15, ctx.currentTime);
+                    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime+dur);
+                    o.connect(g); g.connect(ctx.destination);
+                    o.start(); o.stop(ctx.currentTime+dur);
+                }}catch(e){{}}
+            }}, delay);
+        }}
+        var sello = document.getElementById('fac-sello');
+        var capa = document.getElementById('fac-capa-sello');
+        tono(660, 0.08, 0);
+        tono(990, 0.18, 90);
+        requestAnimationFrame(function(){{
+            sello.style.transition = 'transform 0.35s cubic-bezier(.34,1.56,.64,1), opacity 0.2s ease';
+            sello.style.transform = 'scale(1) rotate(-8deg)';
+            sello.style.opacity = '1';
+        }});
+        var intentos = 0;
+        var intervalo = setInterval(function(){{
+            intentos++;
+            if(window.confetti){{
+                clearInterval(intervalo);
+                var canvas = document.getElementById('fac-canvas-confetti');
+                canvas.width = window.innerWidth; canvas.height = window.innerHeight;
+                var miConfetti = confetti.create(canvas, {{resize:true}});
+                miConfetti({{particleCount:70, spread:80, origin:{{y:0.5}},
+                    colors:['#58a6ff','#a371f7','#79c0ff']}});
+            }} else if(intentos > 20){{
+                clearInterval(intervalo);
+            }}
+        }}, 100);
+        setTimeout(function(){{
+            capa.style.display = 'none';
+        }}, 2200);
+    }})();
+    </script>
+    """
+    render_html(html)
+
+
+
     """Muestra la pantalla de consentimiento informado (Ley 29733) la
     primera vez que un trabajador entra a marcar, y NO deja continuar
     hasta que acepte explícitamente. Devuelve True si el trabajador ya
@@ -522,6 +658,21 @@ if not ES_CELULAR:
                     const botones = el.querySelectorAll('button');
                     for (const b of botones) {
                         if (!b.disabled && b.offsetParent !== null) {
+                            // Si hay VARIOS campos de contraseña dentro
+                            // de este mismo bloque (ej. "Cambiar mi
+                            // Contraseña": actual/nueva/confirmar), solo
+                            // se confirma con Enter cuando el foco está
+                            // en el ÚLTIMO de esos campos — si no, el
+                            // usuario todavía está llenando el
+                            // formulario y no queremos enviarlo antes
+                            // de tiempo.
+                            const camposPass = Array.from(
+                                el.querySelectorAll('input[type="password"]')
+                            );
+                            if (camposPass.length > 1) {
+                                const ultimo = camposPass[camposPass.length - 1];
+                                if (activo !== ultimo) { return; }
+                            }
                             e.preventDefault();
                             e.stopPropagation();
                             e.stopImmediatePropagation();
@@ -3451,16 +3602,16 @@ if not VISTA_TRABAJADOR_MOVIL:
 
         # Personalización de la animación de "globos" al marcar asistencia
         # (solo visible para el Developer con el entorno DEV desbloqueado).
-        with st.sidebar.expander("🎈 Animación de éxito (solo dev)"):
+        with st.sidebar.expander("🏅 Animación de éxito (solo dev)"):
             st.session_state.logo_globos_url = st.text_input(
-                "URL de imagen para los globos:",
+                "URL del logo para el sello y la verificación:",
                 value=st.session_state.get(
                     "logo_globos_url", "/app/static/icon-192.png"
                 ),
                 help=(
-                    "Se usa en la animación que sube en globos al"
-                    " confirmar una marcación. Por defecto es el ícono de"
-                    " la app."
+                    "Se usa en el sello que aparece al confirmar una"
+                    " marcación, y en el anillo de verificación al"
+                    " iniciar sesión. Por defecto es el ícono de la app."
                 ),
             )
 
@@ -5213,7 +5364,11 @@ if opcion == "⏰ Marcar Asistencia":
                         if login_ok:
                             st.session_state.emp_login_ok = True
                             st.session_state.emp_datos = emp_match.iloc[0]
-                            st.success("Acceso verificado correctamente.")
+                            _logo_verif = st.session_state.get(
+                                "logo_globos_url", "/app/static/icon-192.png"
+                            )
+                            render_animacion_verificando(_logo_verif)
+                            _dormir(1.6)
                             st.rerun()
                         else:
                             st.error(
@@ -5597,52 +5752,12 @@ if opcion == "⏰ Marcar Asistencia":
                         "localmente!"
                     )
 
-                # --- Animación de "globos" con el logo (celebración) ---
+                # --- Animación de marcación exitosa: sello + confetti +
+                # sonido (reemplaza la antigua animación de "globos") ---
                 _logo_globos = st.session_state.get(
                     "logo_globos_url", "/app/static/icon-192.png"
                 )
-                _html_globos = (
-                    '<div style="position:fixed; inset:0; pointer-events:none;'
-                    ' z-index:9999; overflow:hidden;">'
-                )
-                for _i in range(10):
-                    _left = random.randint(2, 92)
-                    _delay = round(random.uniform(0, 1.4), 2)
-                    _drift = random.randint(-60, 60)
-                    _rot = random.randint(-14, 14)
-                    _dur = round(random.uniform(3.4, 5.2), 2)
-                    _html_globos += f"""
-                    <div style="position:absolute; bottom:-140px; left:{_left}%;
-                        width:52px; height:66px;
-                        animation:fac-float-up {_dur}s ease-in {_delay}s 1;
-                        --drift:{_drift}px; --rot:{_rot}deg;">
-                        <div style="width:100%; height:100%;
-                            border-radius:50% 50% 50% 50% / 58% 58% 42% 42%;
-                            background:linear-gradient(160deg, var(--cyan), var(--violet));
-                            box-shadow:0 6px 18px rgba(0,0,0,0.35);
-                            display:flex; align-items:center; justify-content:center;">
-                            <img src="{_logo_globos}" style="width:60%; height:60%;
-                                object-fit:contain; border-radius:50%;
-                                background:rgba(255,255,255,0.85);" />
-                        </div>
-                        <div style="position:absolute; left:50%; top:100%; width:1px;
-                            height:24px; background:rgba(255,255,255,0.35);
-                            transform:translateX(-50%);"></div>
-                    </div>
-                    """
-                _html_globos += """
-                </div>
-                <style>
-                @keyframes fac-float-up{
-                    0%{ transform:translateY(0) translateX(0) rotate(0deg); opacity:0; }
-                    8%{ opacity:1; }
-                    100%{ transform:translateY(-115vh) translateX(var(--drift, 30px)) rotate(var(--rot, 8deg)); opacity:0; }
-                }
-                </style>
-                """
-                # render_html() ya le quita la indentación de cada línea
-                # antes de mostrarla como HTML real (ver su docstring).
-                render_html(_html_globos)
+                render_animacion_marcado_exitoso(_logo_globos, hora_str)
 
 elif opcion == "🔐 Panel de Gestión / Admin":
     if not st.session_state.autenticado:
