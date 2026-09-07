@@ -1817,6 +1817,333 @@ def guardar_planilla_periodo_supabase(supabase, datos):
     ).execute()
 
 
+# =====================================================================
+# FASE 3 — Recibos por Honorarios (RxH): se procesa el .txt (separado
+# por "|") que exporta el portal de SUNAT (Consulta de Comprobantes de
+# Pago), se guarda en Supabase para conservar el histórico, y se puede
+# descargar en el mismo formato que tu hoja RXH.
+# =====================================================================
+
+TASA_RETENCION_RENTA_4TA = 0.08  # retención estándar de renta de 4ta categoría
+
+
+def procesar_txt_honorarios(archivo_subido):
+    """Lee el .txt de SUNAT (pipe-delimited) y devuelve un DataFrame
+    limpio, listo para guardar. No calcula nada nuevo — los montos
+    (Renta Bruta, Impuesto, Renta Neta) ya vienen calculados por SUNAT
+    en el propio archivo."""
+    df = pd.read_csv(archivo_subido, sep="|", encoding="utf-8")
+    df = df.loc[:, ~df.columns.str.contains("^Unnamed")]
+    df.columns = [c.strip() for c in df.columns]
+
+    mapa_columnas = {
+        "Fecha de Emisión": "fecha_emision",
+        "Tipo Doc. Emitido": "tipo_doc",
+        "Nro. Doc. Emitido": "nro_doc",
+        "Estado Doc. Emitido": "estado",
+        "Tipo de Doc. Emisor": "tipo_doc_emisor",
+        "Nro. Doc. Emisor": "nro_doc_emisor",
+        "Apellidos y Nombres, Denominación o Razón Social del Emisor": "nombre_emisor",
+        "Tipo de Renta": "tipo_renta",
+        "Gratuito": "gratuito",
+        "Descripción": "descripcion",
+        "Observación": "observacion",
+        "Moneda de Operación": "moneda",
+        "Renta Bruta": "renta_bruta",
+        "Impuesto a la Renta": "impuesto_renta",
+        "Renta Neta": "renta_neta",
+        "Monto Neto Pendiente de Pago": "monto_pendiente",
+    }
+    df = df.rename(columns=mapa_columnas)
+    for campo_num in ["renta_bruta", "impuesto_renta", "renta_neta", "monto_pendiente"]:
+        if campo_num in df.columns:
+            df[campo_num] = pd.to_numeric(df[campo_num], errors="coerce").fillna(0)
+    if "nro_doc_emisor" in df.columns:
+        df["nro_doc_emisor"] = df["nro_doc_emisor"].astype(str)
+    return df
+
+
+def guardar_honorarios_supabase(supabase, empresa_id, periodo, df_honorarios):
+    """Guarda (upsert) cada recibo del período en Supabase. 'nro_doc'
+    es la clave única — si vuelves a subir el mismo archivo, no se
+    duplica."""
+    if not supabase:
+        raise RuntimeError("El cliente de Supabase no está configurado.")
+    registros = []
+    for _, fila in df_honorarios.iterrows():
+        registros.append({
+            "empresa_id": str(empresa_id),
+            "periodo": periodo,
+            "fecha_emision": str(fila.get("fecha_emision", "")),
+            "tipo_doc": str(fila.get("tipo_doc", "")),
+            "nro_doc": str(fila.get("nro_doc", "")),
+            "estado": str(fila.get("estado", "")),
+            "tipo_doc_emisor": str(fila.get("tipo_doc_emisor", "")),
+            "nro_doc_emisor": str(fila.get("nro_doc_emisor", "")),
+            "nombre_emisor": str(fila.get("nombre_emisor", "")).strip(),
+            "tipo_renta": str(fila.get("tipo_renta", "")),
+            "gratuito": str(fila.get("gratuito", "")),
+            "descripcion": str(fila.get("descripcion", "")),
+            "observacion": str(fila.get("observacion", "")),
+            "moneda": str(fila.get("moneda", "")),
+            "renta_bruta": float(fila.get("renta_bruta", 0) or 0),
+            "impuesto_renta": float(fila.get("impuesto_renta", 0) or 0),
+            "renta_neta": float(fila.get("renta_neta", 0) or 0),
+            "monto_pendiente": float(fila.get("monto_pendiente", 0) or 0),
+        })
+    if registros:
+        supabase.table("recibos_honorarios").upsert(
+            registros, on_conflict="empresa_id,nro_doc"
+        ).execute()
+    return len(registros)
+
+
+def cargar_honorarios_periodo_supabase(supabase, empresa_id, periodo):
+    """Trae los recibos de honorarios ya guardados para ese período."""
+    if not supabase:
+        return None
+    try:
+        res = (
+            supabase.table("recibos_honorarios")
+            .select("*")
+            .eq("empresa_id", str(empresa_id))
+            .eq("periodo", periodo)
+            .execute()
+        )
+        return res.data
+    except Exception:
+        return None
+
+
+def generar_excel_honorarios(df_honorarios, razon_social, ruc, periodo_texto):
+    """Genera el Excel de Recibos por Honorarios con el mismo espíritu
+    visual del resto del sistema (encabezado + tabla coloreada)."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "RECIBOS POR HONORARIOS"
+
+    font_titulo = Font(name="Mont", bold=True, size=16, color="16213E")
+    font_normal = Font(name="Calibri", size=9.5)
+    font_header = Font(name="Calibri", bold=True, size=9, color="FFFFFF")
+    fill_header = PatternFill(start_color="6C3483", end_color="6C3483", fill_type="solid")
+    fill_zebra = PatternFill(start_color="F1E9F5", end_color="F1E9F5", fill_type="solid")
+    border_thin = Border(
+        left=Side(style="thin", color="D9D9D9"), right=Side(style="thin", color="D9D9D9"),
+        top=Side(style="thin", color="D9D9D9"), bottom=Side(style="thin", color="D9D9D9"),
+    )
+
+    ws.cell(row=1, column=1, value=str(razon_social)).font = font_titulo
+    ws.cell(row=2, column=1, value=f"RUC: {ruc}").font = font_normal
+    ws.cell(row=3, column=1, value="RECIBOS POR HONORARIOS").font = font_titulo
+    ws.cell(row=4, column=1, value=f"Período: {periodo_texto}").font = font_normal
+
+    columnas = [
+        "Fecha Emisión", "Tipo Doc.", "Nro. Doc.", "Estado",
+        "Tipo Doc. Emisor", "Nro. Doc. Emisor", "Nombre Emisor",
+        "Descripción", "Moneda", "Renta Bruta", "Impuesto Renta (Retención)",
+        "Renta Neta", "Monto Pendiente",
+    ]
+    for idx, nombre in enumerate(columnas, start=1):
+        c = ws.cell(row=6, column=idx, value=nombre)
+        c.font, c.fill = font_header, fill_header
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.freeze_panes = "A7"
+
+    r = 7
+    total_bruta = total_impuesto = total_neta = 0.0
+    for _, fila in df_honorarios.iterrows():
+        valores = [
+            fila.get("fecha_emision", ""), fila.get("tipo_doc", ""),
+            fila.get("nro_doc", ""), fila.get("estado", ""),
+            fila.get("tipo_doc_emisor", ""), fila.get("nro_doc_emisor", ""),
+            fila.get("nombre_emisor", ""), fila.get("descripcion", ""),
+            fila.get("moneda", ""), float(fila.get("renta_bruta", 0) or 0),
+            float(fila.get("impuesto_renta", 0) or 0),
+            float(fila.get("renta_neta", 0) or 0),
+            float(fila.get("monto_pendiente", 0) or 0),
+        ]
+        total_bruta += valores[9]
+        total_impuesto += valores[10]
+        total_neta += valores[11]
+        for c_i, valor in enumerate(valores, start=1):
+            cell = ws.cell(row=r, column=c_i, value=valor)
+            cell.border = border_thin
+            cell.font = font_normal
+            if (r - 7) % 2 == 0:
+                cell.fill = fill_zebra
+            if c_i >= 10 and isinstance(valor, (int, float)):
+                cell.number_format = "#,##0.00"
+        r += 1
+
+    ws.cell(row=r, column=7, value="TOTAL").font = Font(bold=True)
+    ws.cell(row=r, column=10, value=round(total_bruta, 2)).font = Font(bold=True)
+    ws.cell(row=r, column=11, value=round(total_impuesto, 2)).font = Font(bold=True)
+    ws.cell(row=r, column=12, value=round(total_neta, 2)).font = Font(bold=True)
+
+    ws.auto_filter.ref = f"A6:M{r-1}"
+    for col_idx in range(1, len(columnas) + 1):
+        max_len = max(
+            (len(str(ws.cell(row=rr, column=col_idx).value or "")) for rr in range(6, r)),
+            default=10,
+        )
+        ws.column_dimensions[get_column_letter(col_idx)].width = max(max_len + 2, 10)
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToWidth = 1
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+
+    output = io.BytesIO()
+    wb.save(output)
+    return output.getvalue()
+
+
+# =====================================================================
+# FASE 4 — Exportación AFPnet (reporte mensual de aportes a la SBS)
+# =====================================================================
+
+def generar_excel_afpnet(df_empleados, df_asistencia, mes_sel, anio_sel, supabase):
+    """Genera el Excel de aportes AFP del mes, con los campos que pide
+    el reporte AFPnet: DNI, nombre, AFP, remuneración computable, y los
+    3 componentes del aporte. Solo incluye trabajadores con tipo de
+    aportación = AFP."""
+    prefix_periodo = f"{anio_sel}-{mes_sel:02d}"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "AFPnet"
+
+    font_titulo = Font(name="Mont", bold=True, size=14, color="16213E")
+    font_header = Font(bold=True, size=9, color="FFFFFF")
+    fill_header = PatternFill(start_color="002060", end_color="002060", fill_type="solid")
+    font_normal = Font(size=9.5)
+
+    ws.cell(row=1, column=1, value="REPORTE DE APORTES AFP (AFPnet)").font = font_titulo
+    ws.cell(row=2, column=1, value=f"Período: {MESES_NOMBRES[mes_sel]} {anio_sel}")
+
+    columnas = [
+        "DNI", "Apellidos y Nombres", "AFP", "CUSPP",
+        "Remuneración Computable", "Aporte Obligatorio (10%)",
+        "Comisión AFP", "Prima de Seguro", "Total Aporte AFP",
+    ]
+    for idx, nombre in enumerate(columnas, start=1):
+        c = ws.cell(row=4, column=idx, value=nombre)
+        c.font, c.fill = font_header, fill_header
+        c.alignment = Alignment(horizontal="center", wrap_text=True)
+    ws.freeze_panes = "A5"
+
+    r = 5
+    for _, emp in df_empleados.sort_values("nombre").iterrows():
+        if str(emp.get("tipo_aportacion", "")).upper() != "AFP":
+            continue
+        dni = str(emp["dni"])
+        periodo_bd = cargar_planilla_periodo_supabase(
+            supabase, st.session_state.empresa_id, dni, prefix_periodo
+        ) or {}
+        emp_asist = df_asistencia[df_asistencia["Empleado"] == emp["nombre"]]
+        emp_asist_mes = (
+            emp_asist[emp_asist["Fecha"].astype(str).str.startswith(prefix_periodo)]
+            if not emp_asist.empty else pd.DataFrame()
+        )
+        tardanzas_dias = (
+            emp_asist_mes[emp_asist_mes["Estado"] == "Tardanza"]["Fecha"].nunique()
+            if not emp_asist_mes.empty else 0
+        )
+        puntuales = (
+            emp_asist_mes[emp_asist_mes["Estado"] == "Puntual"]["Fecha"].nunique()
+            if not emp_asist_mes.empty else 0
+        )
+        min_tardanza = int(emp_asist_mes["Minutos Tardanza"].sum()) if not emp_asist_mes.empty else 0
+        min_extra_dia = (
+            emp_asist_mes.groupby("Fecha")["Horas Extra (min)"].sum().tolist()
+            if not emp_asist_mes.empty else []
+        )
+        calc = calcular_planilla_trabajador(
+            emp, puntuales + tardanzas_dias, min_tardanza, min_extra_dia,
+            periodo_bd, mes_sel, anio_sel,
+            st.session_state.permitir_horas_extra, st.session_state.regimen_laboral,
+        )
+        valores = [
+            dni, emp["nombre"], emp.get("afp_tipo", ""),
+            emp.get("cuspp", ""), calc["total_computable"],
+            calc["aporte_obligatorio"], calc["comision_afp"],
+            calc["prima_seguro"], calc["total_afp"],
+        ]
+        for c_i, valor in enumerate(valores, start=1):
+            cell = ws.cell(row=r, column=c_i, value=valor)
+            cell.font = font_normal
+            if c_i >= 5 and isinstance(valor, (int, float)):
+                cell.number_format = "#,##0.00"
+        r += 1
+
+    for col_idx in range(1, len(columnas) + 1):
+        ws.column_dimensions[get_column_letter(col_idx)].width = 20
+    if r > 5:
+        ws.auto_filter.ref = f"A4:I{r-1}"
+
+    output = io.BytesIO()
+    wb.save(output)
+    return output.getvalue()
+
+
+# =====================================================================
+# FASE 5 — Exportación PLAME (BORRADOR) — ⚠️ no verificado contra el
+# Anexo 3 oficial de SUNAT todavía. Sirve como punto de partida para
+# ajustar campo por campo una vez que revisemos la estructura exacta.
+# =====================================================================
+
+def generar_borrador_plame(df_empleados, df_asistencia, mes_sel, anio_sel, supabase):
+    """Genera un archivo BORRADOR con los campos típicos que pide PLAME
+    (T-Registro / Estructura 18 - Detalle de Ingresos, aproximado). NO
+    reemplaza el Anexo 3 oficial — es una base para revisar y ajustar
+    juntos antes de usarlo en una presentación real."""
+    prefix_periodo = f"{anio_sel}-{mes_sel:02d}"
+    filas = []
+    for _, emp in df_empleados.sort_values("nombre").iterrows():
+        dni = str(emp["dni"])
+        periodo_bd = cargar_planilla_periodo_supabase(
+            supabase, st.session_state.empresa_id, dni, prefix_periodo
+        ) or {}
+        emp_asist = df_asistencia[df_asistencia["Empleado"] == emp["nombre"]]
+        emp_asist_mes = (
+            emp_asist[emp_asist["Fecha"].astype(str).str.startswith(prefix_periodo)]
+            if not emp_asist.empty else pd.DataFrame()
+        )
+        tardanzas_dias = (
+            emp_asist_mes[emp_asist_mes["Estado"] == "Tardanza"]["Fecha"].nunique()
+            if not emp_asist_mes.empty else 0
+        )
+        puntuales = (
+            emp_asist_mes[emp_asist_mes["Estado"] == "Puntual"]["Fecha"].nunique()
+            if not emp_asist_mes.empty else 0
+        )
+        min_tardanza = int(emp_asist_mes["Minutos Tardanza"].sum()) if not emp_asist_mes.empty else 0
+        min_extra_dia = (
+            emp_asist_mes.groupby("Fecha")["Horas Extra (min)"].sum().tolist()
+            if not emp_asist_mes.empty else []
+        )
+        calc = calcular_planilla_trabajador(
+            emp, puntuales + tardanzas_dias, min_tardanza, min_extra_dia,
+            periodo_bd, mes_sel, anio_sel,
+            st.session_state.permitir_horas_extra, st.session_state.regimen_laboral,
+        )
+        filas.append({
+            "Tipo Doc.": "1",  # 1=DNI (código T-Registro aproximado)
+            "Nro Doc.": dni,
+            "Apellido Paterno": emp.get("apellido_paterno", ""),
+            "Apellido Materno": emp.get("apellido_materno", ""),
+            "Nombres": emp.get("nombres", "") or emp["nombre"],
+            "Periodo": prefix_periodo.replace("-", ""),
+            "Régimen Pensionario": emp.get("tipo_aportacion", ""),
+            "Remuneración Básica": float(emp.get("sueldo_basico", 0) or 0),
+            "Total Ingresos": calc["total_bruta"],
+            "Remuneración Computable": calc["total_computable"],
+            "Aporte ONP": calc["total_onp"],
+            "Aporte AFP": calc["total_afp"],
+            "Renta 5ta": calc["renta_5ta"],
+            "ESSALUD": calc["essalud"],
+            "Neto a Pagar": calc["neto_a_pagar"],
+        })
+    return pd.DataFrame(filas)
+
+
 def calcular_renta_5ta_mensual(remuneracion_computable_mensual):
     """Aproximación de la Renta de 5ta categoría mensual (ver nota de
     simplificaciones arriba)."""
@@ -2585,6 +2912,7 @@ def cargar_datos(empresa_id):
             "exclusion_afp",
             "asignacion_familiar",
             "regimen_salud",
+            "cuspp",
         ]
         if registros_empleados:
             df_empleados = pd.DataFrame(registros_empleados)
@@ -2637,7 +2965,7 @@ def cargar_datos(empresa_id):
             "fecha_nacimiento", "cta_bancaria", "banco",
             "correo_electronico", "tipo_contrato", "modalidad",
             "tipo_aportacion", "afp_tipo", "fecha_cese", "fecha_fin_contrato", "motivo_baja",
-            "exclusion_afp", "regimen_salud",
+            "exclusion_afp", "regimen_salud", "cuspp",
         ]
         for campo in campos_planilla_texto:
             if campo not in df_empleados.columns:
@@ -2714,7 +3042,7 @@ def cargar_datos(empresa_id):
                 "fecha_nacimiento", "cta_bancaria", "banco",
                 "correo_electronico", "tipo_contrato", "modalidad",
                 "tipo_aportacion", "afp_tipo", "fecha_cese", "fecha_fin_contrato", "motivo_baja",
-                "exclusion_afp", "regimen_salud",
+                "exclusion_afp", "regimen_salud", "cuspp",
             ]
             for campo in campos_planilla_texto_off:
                 if campo not in df_empleados.columns:
@@ -2764,6 +3092,7 @@ def cargar_datos(empresa_id):
             "motivo_baja": ["", ""],
             "exclusion_afp": ["", ""],
             "regimen_salud": ["ESSALUD", "ESSALUD"],
+            "cuspp": ["", ""],
             "asignacion_familiar": [False, False],
         })
         with bloqueo_csv(CSV_EMPLEADOS):
@@ -5192,6 +5521,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                 "👥 Personal",
                 "⚙️ Ajustes",
                 "💰 Planilla",
+                "🧾 Honorarios",
             ])
         elif st.session_state.rol in ["admin", "master"] and ES_CELULAR:
             st.caption(
@@ -7516,6 +7846,17 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     " directamente."
                                 ),
                             )
+                            dp_cuspp = st.text_input(
+                                "CUSPP (código único de AFP):",
+                                value=_val_dp("cuspp"),
+                                help=(
+                                    "El código de afiliación a su AFP —"
+                                    " lo tiene en su boleta de pago"
+                                    " anterior o se lo puede sacar en la"
+                                    " web de su AFP. Se usa para el"
+                                    " reporte AFPnet."
+                                ),
+                            )
                         with col_dp5:
                             dp_exclusion = st.selectbox(
                                 "Exclusión de AFP/ONP (dejar en blanco si"
@@ -7597,6 +7938,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 "sueldo_basico": dp_sueldo,
                                 "tipo_aportacion": dp_tipo_aport,
                                 "afp_tipo": dp_afp_tipo,
+                                "cuspp": dp_cuspp.strip(),
                                 "exclusion_afp": dp_exclusion,
                                 "fecha_cese": dp_f_cese.strip(),
                                 "fecha_fin_contrato": dp_f_fin_contrato.strip(),
@@ -8158,10 +8500,205 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                             key="descargar_planilla_anual",
                         )
 
+                st.divider()
+                st.markdown("##### 📤 Exportaciones especiales")
+                col_desc3, col_desc4 = st.columns(2)
+                with col_desc3:
+                    if st.button(
+                        "🏦 Exportar AFPnet del mes", use_container_width=True
+                    ):
+                        with st.spinner("Generando reporte AFPnet..."):
+                            afpnet_bytes = generar_excel_afpnet(
+                                df_empleados, df_asistencia, mes_planilla,
+                                anio_planilla, supabase,
+                            )
+                        st.download_button(
+                            label="💾 Confirmar Descarga AFPnet",
+                            data=afpnet_bytes,
+                            file_name=(
+                                f"AFPnet_{st.session_state.empresa_id}_"
+                                f"{mes_nombre_planilla}_{anio_planilla}.xlsx"
+                            ),
+                            mime=(
+                                "application/vnd.openxmlformats-officedocument"
+                                ".spreadsheetml.sheet"
+                            ),
+                            use_container_width=True,
+                            key="descargar_afpnet",
+                        )
+                with col_desc4:
+                    if st.button(
+                        "📋 Exportar PLAME (borrador)",
+                        use_container_width=True,
+                        help=(
+                            "⚠️ Borrador, no verificado todavía contra el"
+                            " Anexo 3 oficial de SUNAT. No lo presentes"
+                            " tal cual sin que tu contador lo revise."
+                        ),
+                    ):
+                        with st.spinner("Generando borrador PLAME..."):
+                            df_plame = generar_borrador_plame(
+                                df_empleados, df_asistencia, mes_planilla,
+                                anio_planilla, supabase,
+                            )
+                            buffer_plame = io.BytesIO()
+                            df_plame.to_excel(
+                                buffer_plame, index=False, engine="openpyxl"
+                            )
+                            buffer_plame.seek(0)
+                        st.warning(
+                            "⚠️ Este archivo es un BORRADOR con los campos"
+                            " típicos de PLAME — todavía no se verificó"
+                            " campo por campo contra el Anexo 3 oficial de"
+                            " SUNAT. Úsalo como punto de partida, no para"
+                            " presentar directamente."
+                        )
+                        st.download_button(
+                            label="💾 Confirmar Descarga PLAME (borrador)",
+                            data=buffer_plame.getvalue(),
+                            file_name=(
+                                f"PLAME_borrador_{st.session_state.empresa_id}"
+                                f"_{mes_nombre_planilla}_{anio_planilla}.xlsx"
+                            ),
+                            mime=(
+                                "application/vnd.openxmlformats-officedocument"
+                                ".spreadsheetml.sheet"
+                            ),
+                            use_container_width=True,
+                            key="descargar_plame",
+                        )
+
                 st.info(
-                    "📌 Fase 1, 2a y 2b completas: asistencia, datos"
-                    " maestros, datos variables del período, y descarga"
-                    " de la planilla calculada. Siguen las Fases 3, 4 y"
-                    " 5: Recibos por Honorarios, exportación AFPnet, y"
-                    " exportación PLAME."
+                    "📌 Fases 1, 2a, 2b, 4 y 5 implementadas (Planilla"
+                    " completa + AFPnet + PLAME borrador). Ve a la pestaña"
+                    " 🧾 Honorarios para la Fase 3."
                 )
+            with tab_objs[6]:
+                st.subheader("🧾 Recibos por Honorarios (Fase 3)")
+                st.caption(
+                    "Solo visible para SuperAdmin y Developer. Sube el"
+                    " .txt que exporta el portal de SUNAT (Consulta de"
+                    " Comprobantes de Pago) — se procesa automático y"
+                    " queda guardado por período."
+                )
+
+                col_hon1, col_hon2 = st.columns(2)
+                with col_hon1:
+                    mes_nombre_hon = st.selectbox(
+                        "Mes:", list(MESES_NOMBRES.values()),
+                        index=ahora_peru().month - 1, key="mes_hon_sel",
+                    )
+                    mes_hon = MESES_INVERSO[mes_nombre_hon]
+                with col_hon2:
+                    anio_hon = st.number_input(
+                        "Año:", min_value=2024, max_value=2030,
+                        value=ahora_peru().year, key="anio_hon_sel",
+                    )
+                periodo_hon = f"{anio_hon}-{mes_hon:02d}"
+
+                archivo_hon = st.file_uploader(
+                    "Subir archivo .txt de SUNAT:", type=["txt"],
+                    key="uploader_honorarios",
+                    help=(
+                        "Descárgalo desde el portal de SUNAT → Consulta"
+                        " de Comprobantes de Pago → exportar. Es un"
+                        " archivo separado por '|', no un PDF."
+                    ),
+                )
+
+                if archivo_hon is not None:
+                    if st.button(
+                        "📥 Procesar e Importar Recibos", type="primary"
+                    ):
+                        try:
+                            df_hon_nuevo = procesar_txt_honorarios(archivo_hon)
+                            if supabase:
+                                n = guardar_honorarios_supabase(
+                                    supabase, st.session_state.empresa_id,
+                                    periodo_hon, df_hon_nuevo,
+                                )
+                                st.success(
+                                    f"✅ {n} recibo(s) procesados y"
+                                    " guardados para este período."
+                                )
+                                st.rerun()
+                            else:
+                                st.warning(
+                                    "Supabase no está configurado ahora"
+                                    " mismo."
+                                )
+                        except Exception as e:
+                            st.error(f"No se pudo procesar el archivo: {e}")
+
+                st.divider()
+                registros_hon = (
+                    cargar_honorarios_periodo_supabase(
+                        supabase, st.session_state.empresa_id, periodo_hon
+                    )
+                    or []
+                )
+                if not registros_hon:
+                    st.info(
+                        "Todavía no hay recibos guardados para este"
+                        " período."
+                    )
+                else:
+                    df_hon_vista = pd.DataFrame(registros_hon)
+
+                    col_hm1, col_hm2, col_hm3 = st.columns(3)
+                    col_hm1.metric("Recibos", len(df_hon_vista))
+                    col_hm2.metric(
+                        "Total Renta Bruta",
+                        f"S/ {df_hon_vista['renta_bruta'].sum():,.2f}",
+                    )
+                    col_hm3.metric(
+                        "Total Retención",
+                        f"S/ {df_hon_vista['impuesto_renta'].sum():,.2f}",
+                    )
+
+                    busqueda_hon = st.text_input(
+                        "🔎 Buscar por nombre o RUC/DNI del emisor:",
+                        value="",
+                    )
+                    df_hon_mostrar = df_hon_vista.copy()
+                    if busqueda_hon.strip():
+                        termino_hon = busqueda_hon.strip().upper()
+                        df_hon_mostrar = df_hon_mostrar[
+                            df_hon_mostrar["nombre_emisor"]
+                            .astype(str).str.upper().str.contains(termino_hon)
+                            | df_hon_mostrar["nro_doc_emisor"]
+                            .astype(str).str.contains(termino_hon)
+                        ]
+                    st.dataframe(
+                        df_hon_mostrar[[
+                            "fecha_emision", "nro_doc", "nro_doc_emisor",
+                            "nombre_emisor", "renta_bruta",
+                            "impuesto_renta", "renta_neta",
+                        ]],
+                        use_container_width=True, hide_index=True,
+                    )
+
+                    if st.button(
+                        "📥 Descargar Excel de Honorarios", type="primary"
+                    ):
+                        razon_social_hon, ruc_hon = _obtener_datos_empresa(
+                            df_empresas
+                        )
+                        excel_hon = generar_excel_honorarios(
+                            df_hon_vista, razon_social_hon, ruc_hon,
+                            f"{mes_nombre_hon} {anio_hon}",
+                        )
+                        st.download_button(
+                            label="💾 Confirmar Descarga",
+                            data=excel_hon,
+                            file_name=(
+                                f"Honorarios_{st.session_state.empresa_id}_"
+                                f"{mes_nombre_hon}_{anio_hon}.xlsx"
+                            ),
+                            mime=(
+                                "application/vnd.openxmlformats-officedocument"
+                                ".spreadsheetml.sheet"
+                            ),
+                            use_container_width=True,
+                            key="descargar_honorarios",
+                        )
