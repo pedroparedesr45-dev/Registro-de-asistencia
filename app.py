@@ -1958,16 +1958,18 @@ def _codigo_tipo_documento(tipo_doc_texto):
     return TABLA3_TIPO_DOCUMENTO.get(str(tipo_doc_texto).strip().upper(), "1")
 
 
-def _dividir_nombre_completo(nombre_completo, es_ruc):
+def _dividir_nombre_completo(nombre_completo):
     """SUNAT no nos da los apellidos/nombres del prestador separados
-    (el .txt trae 'VACA VALDERRAMA PABLO EFRAIN' todo junto) — esto es
-    una aproximación: si es RUC (empresa), todo va en 'apellido
-    paterno' como razón social; si es persona natural, se asume que
-    las primeras 2 palabras son los apellidos y el resto los nombres.
-    Revísalo con tu contador si algún nombre queda mal dividido."""
+    (el .txt trae 'VACA VALDERRAMA PABLO EFRAIN' todo junto) — se
+    asume que las primeras 2 palabras son los apellidos y el resto los
+    nombres. Los Recibos por Honorarios (renta de 4ta) solo los puede
+    emitir una PERSONA NATURAL, nunca una empresa — por eso siempre se
+    divide el nombre, tenga DNI o RUC (algunas personas naturales
+    tienen RUC propio, ej. uno que empieza con '10'). Revísalo con tu
+    contador si algún nombre queda mal dividido."""
     palabras = str(nombre_completo).strip().split()
-    if es_ruc or len(palabras) == 0:
-        return str(nombre_completo).strip(), "", ""
+    if len(palabras) == 0:
+        return "", "", ""
     if len(palabras) == 1:
         return palabras[0], "", ""
     if len(palabras) == 2:
@@ -1994,9 +1996,8 @@ def generar_plame_honorarios_ps4(df_honorarios):
     df_unicos = df_honorarios.drop_duplicates(subset=["nro_doc_emisor"])
     lineas = []
     for _, fila in df_unicos.iterrows():
-        es_ruc = str(fila.get("tipo_doc_emisor", "")).strip().upper() == "RUC"
         ap_pat, ap_mat, nombres = _dividir_nombre_completo(
-            fila.get("nombre_emisor", ""), es_ruc
+            fila.get("nombre_emisor", "")
         )
         campos = [
             _codigo_tipo_documento(fila.get("tipo_doc_emisor", "DNI")),
@@ -2024,7 +2025,6 @@ def generar_plame_honorarios_4ta(df_honorarios):
     que siempre se envía 3 y este campo va vacío)."""
     lineas = []
     for _, fila in df_honorarios.iterrows():
-        es_ruc = str(fila.get("tipo_doc_emisor", "")).strip().upper() == "RUC"
         impuesto = float(fila.get("impuesto_renta", 0) or 0)
         indicador_retencion_4ta = "1" if impuesto > 0 else "0"
         campos = [
