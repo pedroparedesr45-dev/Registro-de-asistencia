@@ -1945,26 +1945,55 @@ def cargar_todos_honorarios_supabase(supabase, empresa_id):
 # --- PLAME para Recibos por Honorarios: PDT PLAME importa 2 archivos
 # de TEXTO PLANO (no Excel), separados por "|", con nombre de archivo
 # obligatorio: "0601" + AAAAMM (período) + RUC + extensión.
-#   .PS0 = Datos del Prestador de Servicios
-#   .4TA = Detalle de Recibos por Honorarios del período
-# ⚠️ BORRADOR: la nomenclatura del archivo y el delimitador "|" están
-# confirmados; el orden exacto de columnas dentro de cada línea es mi
-# mejor estimado a partir de los campos típicos de estas estructuras —
-# no viene de un documento oficial verificado campo por campo, así que
-# revísalo con tu contador o con el propio validador de PLAME antes de
-# usarlo en una presentación real. ---
+#   .ps4 = Estructura 7 — Prestadores de Servicios con Rentas de 4ta
+#          Categoría (se importa PRIMERO en el PDT).
+#   .4ta = Estructura 20 — Detalle de Comprobantes del período (se
+#          importa DESPUÉS del .ps4).
+# ⚠️ CORREGIDO (antes se generaba ".PS0", que PLAME no reconoce como
+# archivo importable — por eso antes solo dejaba subir el .4TA). La
+# nomenclatura y el orden de campos de esta versión están armados a
+# partir de la cartilla oficial del PDT PLAME (SUNAT) y coinciden con
+# ejemplos reales de varios proveedores de macros de carga masiva, pero
+# algunos códigos puntuales (tipo de comprobante exacto de la Tabla 10,
+# por ejemplo) no pude verificarlos byte a byte contra el Anexo 3
+# oficial. Antes de presentar en un período real, valida el archivo con
+# el propio PDT PLAME (te marca inconsistencias fila por fila) o con tu
+# contador. ---
 
 def _nombre_archivo_plame_honorarios(ruc, periodo_texto, extension):
-    """Arma el nombre exacto que exige PLAME: 0601 + AAAAMM + RUC + ext."""
+    """Arma el nombre exacto que exige PLAME: 0601 + AAAAMM + RUC + ext.
+
+    ⚠️ CORREGIDO: la cartilla oficial del PDT PLAME (SUNAT) y el Anexo 3
+    indican que el archivo de prestadores debe tener extensión ".ps4"
+    (minúsculas), NO ".PS0" como se generaba antes. Con ".PS0" el PDT
+    PLAME ni siquiera muestra el archivo como seleccionable en su
+    diálogo de "Importar archivo" (que filtra por extensión) — por eso
+    antes solo se podía subir el .4TA."""
     aaaamm = periodo_texto.replace("-", "")
     ruc_limpio = str(ruc).strip().replace(" ", "")
     return f"0601{aaaamm}{ruc_limpio}.{extension}"
 
 
-def generar_plame_honorarios_ps0(df_honorarios):
-    """Archivo .PS0 (texto plano, separado por '|'): datos de cada
-    prestador de servicios distinto que emitió recibos, sin encabezado
-    — igual que el formato AFPnet, PLAME no acepta encabezados."""
+def generar_plame_honorarios_ps4(df_honorarios, domiciliados=True):
+    """Archivo .ps4 (Estructura 7 del Anexo 3 — "Prestadores de
+    Servicios con Rentas de 4ta Categoría"), texto plano separado por
+    '|', sin encabezado.
+
+    Campos por línea, según la cartilla oficial del PDT PLAME:
+      1. Tipo de documento del prestador (Tabla 3: 1=DNI, 4=Carné Ext.,
+         6=RUC, 7=Pasaporte).
+      2. Número de documento del prestador.
+      3. Apellidos y nombres / razón social.
+      4. Indicador de domiciliado (Ley del IR): 1 = Domiciliado,
+         2 = No domiciliado.
+      5. Indicador de convenio para evitar la doble tributación:
+         0 = No tiene convenio, 1 = Sí tiene.
+
+    ⚠️ Se asume que todos los prestadores son domiciliados en Perú y sin
+    convenio de doble tributación (el caso normal para un Recibo por
+    Honorarios peruano). Si alguno de tus prestadores es no domiciliado
+    o tiene convenio, avísame para ajustar esos 2 campos por prestador.
+    """
     df_unicos = df_honorarios.drop_duplicates(subset=["nro_doc_emisor"])
     lineas = []
     for _, fila in df_unicos.iterrows():
@@ -1973,50 +2002,78 @@ def generar_plame_honorarios_ps0(df_honorarios):
             tipo_doc,
             str(fila.get("nro_doc_emisor", "")),
             str(fila.get("nombre_emisor", "")).strip(),
+            "1" if domiciliados else "2",  # domiciliado
+            "0",  # sin convenio de doble tributación
         ]
         lineas.append("|".join(campos))
     return "\r\n".join(lineas)
 
 
-def generar_plame_honorarios_4ta(df_honorarios, periodo_texto):
-    """Archivo .4TA (texto plano, separado por '|'): detalle de cada
-    recibo por honorarios del período, sin encabezado."""
-    aaaamm = periodo_texto.replace("-", "")
+def generar_plame_honorarios_4ta(df_honorarios):
+    """Archivo .4ta (Estructura 20 del Anexo 3 — "Prestador de
+    Servicios con Rentas de 4ta Categoría: Detalle de comprobantes"),
+    texto plano separado por '|', sin encabezado.
+
+    Campos por línea, según la cartilla oficial del PDT PLAME:
+      1. Tipo de documento del prestador (mismo código que en el .ps4,
+         debe coincidir para que PLAME vincule el comprobante con el
+         prestador ya importado).
+      2. Número de documento del prestador.
+      3. Tipo de comprobante (Tabla 10).
+      4. Serie del comprobante.
+      5. Número del comprobante.
+      6. Fecha de emisión (DD/MM/AAAA).
+      7. Fecha de pago (DD/MM/AAAA) — debe caer dentro del período que
+         se está declarando.
+      8. Monto total de la retribución del servicio (renta bruta).
+      9. Indicador de retención del IR de 4ta: 0 = No aplica,
+         1 = Sí aplica.
+     10. Monto retenido del IR de 4ta categoría.
+
+    ⚠️ IMPORTANTE — sigue sin estar 100% verificado: no encontré el PDF
+    oficial completo del "Anexo 3" con el código exacto de la Tabla 10
+    (tipo de comprobante) para "Recibo por Honorarios Electrónico", así
+    que ese campo se deja como texto tal cual viene del archivo de
+    SUNAT ("tipo_doc"). Antes de presentar en un período real, valida
+    el archivo generado con el propio PDT PLAME (que te marca
+    inconsistencias) o con tu contador.
+    """
     lineas = []
     for _, fila in df_honorarios.iterrows():
         tipo_doc = "6" if fila.get("tipo_doc_emisor") == "RUC" else "1"
+        impuesto = float(fila.get("impuesto_renta", 0) or 0)
+        indicador_retencion = "1" if impuesto > 0 else "0"
         campos = [
             tipo_doc,
             str(fila.get("nro_doc_emisor", "")),
-            aaaamm,
+            str(fila.get("tipo_doc", "")).strip(),
             str(fila.get("serie", "")),
             str(fila.get("numero", "")),
             str(fila.get("fecha_emision", "")),
             str(fila.get("fecha_emision", "")),  # fecha de pago (no la registramos aparte todavía; se usa la misma de emisión)
-            "PEN",
             f"{float(fila.get('renta_bruta', 0) or 0):.2f}",
-            f"{float(fila.get('impuesto_renta', 0) or 0):.2f}",
-            f"{float(fila.get('renta_neta', 0) or 0):.2f}",
+            indicador_retencion,
+            f"{impuesto:.2f}",
         ]
         lineas.append("|".join(campos))
     return "\r\n".join(lineas)
 
 
 def generar_zip_plame_honorarios(df_honorarios, ruc, periodo_texto):
-    """Empaqueta los 2 archivos (.PS0 y .4TA) juntos en un .zip, con
+    """Empaqueta los 2 archivos (.ps4 y .4ta) juntos en un .zip, con
     los nombres exactos que exige PLAME, listos para descomprimir en
     una carpeta y usar 'Importar archivo' en el PDT."""
-    nombre_ps0 = _nombre_archivo_plame_honorarios(ruc, periodo_texto, "PS0")
-    nombre_4ta = _nombre_archivo_plame_honorarios(ruc, periodo_texto, "4TA")
-    contenido_ps0 = generar_plame_honorarios_ps0(df_honorarios)
-    contenido_4ta = generar_plame_honorarios_4ta(df_honorarios, periodo_texto)
+    nombre_ps4 = _nombre_archivo_plame_honorarios(ruc, periodo_texto, "ps4")
+    nombre_4ta = _nombre_archivo_plame_honorarios(ruc, periodo_texto, "4ta")
+    contenido_ps4 = generar_plame_honorarios_ps4(df_honorarios)
+    contenido_4ta = generar_plame_honorarios_4ta(df_honorarios)
 
     buffer_zip = io.BytesIO()
     with zipfile.ZipFile(buffer_zip, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr(nombre_ps0, contenido_ps0)
+        zf.writestr(nombre_ps4, contenido_ps4)
         zf.writestr(nombre_4ta, contenido_4ta)
     buffer_zip.seek(0)
-    return buffer_zip.getvalue(), nombre_ps0, nombre_4ta
+    return buffer_zip.getvalue(), nombre_ps4, nombre_4ta
 
 
 def generar_excel_honorarios(
@@ -8931,27 +8988,27 @@ elif opcion == "🔐 Panel de Gestión / Admin":
 
                     st.divider()
                     if st.button(
-                        "📋 Generar Carga Masiva a PLAME (.PS0 + .4TA)",
+                        "📋 Generar Carga Masiva a PLAME (.ps4 + .4ta)",
                         help=(
                             "⚠️ Genera los 2 archivos de texto plano que"
                             " pide PLAME (separados por '|', con el"
-                            " nombre exacto que exige el sistema), listos"
-                            " para 'Importar archivo' en la pestaña PS 4ta"
-                            " Categoría. El orden de columnas dentro de"
-                            " cada línea es mi mejor estimado — revísalo"
-                            " antes de una presentación real."
+                            " nombre y extensión exacta que exige el"
+                            " sistema: .ps4 y .4ta), listos para"
+                            " 'Importar archivo' en la pestaña PS 4ta"
+                            " Categoría. Algunos códigos puntuales (tipo"
+                            " de comprobante) no están 100% verificados —"
+                            " revísalo antes de una presentación real."
                         ),
                     ):
                         st.warning(
-                            "⚠️ El nombre de archivo y el separador '|'"
-                            " están confirmados según las reglas de"
-                            " PLAME. El orden exacto de las columnas"
-                            " dentro de cada línea es mi mejor estimado"
-                            " a partir de los campos típicos — no viene"
-                            " de un documento oficial verificado campo"
-                            " por campo. Pruébalo primero con la opción"
-                            " 'validar' del propio PDT PLAME antes de"
-                            " presentarlo."
+                            "⚠️ El nombre de archivo, las extensiones"
+                            " (.ps4 y .4ta) y el separador '|' están"
+                            " confirmados según la cartilla oficial del"
+                            " PDT PLAME. El código exacto del 'tipo de"
+                            " comprobante' (Tabla 10) no pude verificarlo"
+                            " byte a byte contra el Anexo 3 oficial —"
+                            " pruébalo primero con la opción 'validar'"
+                            " del propio PDT PLAME antes de presentarlo."
                         )
                         razon_social_p, ruc_p = _obtener_datos_empresa(
                             df_empresas
@@ -8964,13 +9021,13 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 " del archivo lo necesita sí o sí)."
                             )
                         else:
-                            zip_bytes, nombre_ps0, nombre_4ta = (
+                            zip_bytes, nombre_ps4, nombre_4ta = (
                                 generar_zip_plame_honorarios(
                                     df_hon_vista, ruc_p, periodo_hon
                                 )
                             )
                             st.caption(
-                                f"Archivos: `{nombre_ps0}` y `{nombre_4ta}`"
+                                f"Archivos: `{nombre_ps4}` y `{nombre_4ta}`"
                             )
                             st.download_button(
                                 "💾 Descargar carpeta (.zip con ambos"
@@ -8985,7 +9042,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                             )
                             st.caption(
                                 "Descomprime el .zip en una carpeta — los"
-                                " 2 archivos (.PS0 y .4TA) deben quedar"
+                                " 2 archivos (.ps4 y .4ta) deben quedar"
                                 " juntos ahí para que PLAME los pueda"
                                 " importar."
                             )
