@@ -502,7 +502,7 @@ def render_animacion_marcado_exitoso(logo_url, hora_texto):
     render_html(html)
 
 
-
+def render_gate_consentimiento(supabase, datos_emp):
     """Muestra la pantalla de consentimiento informado (Ley 29733) la
     primera vez que un trabajador entra a marcar, y NO deja continuar
     hasta que acepte explícitamente. Devuelve True si el trabajador ya
