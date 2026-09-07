@@ -1946,114 +1946,99 @@ def cargar_todos_honorarios_supabase(supabase, empresa_id):
 # de TEXTO PLANO (no Excel), separados por "|", con nombre de archivo
 # obligatorio: "0601" + AAAAMM (período) + RUC + extensión.
 #   .ps4 = Estructura 7 — Prestadores de Servicios con Rentas de 4ta
-#          Categoría (se importa PRIMERO en el PDT).
-#   .4ta = Estructura 20 — Detalle de Comprobantes del período (se
-#          importa DESPUÉS del .ps4).
-# ⚠️ CORREGIDO (antes se generaba ".PS0", que PLAME no reconoce como
-# archivo importable — por eso antes solo dejaba subir el .4TA). La
-# nomenclatura y el orden de campos de esta versión están armados a
-# partir de la cartilla oficial del PDT PLAME (SUNAT) y coinciden con
-# ejemplos reales de varios proveedores de macros de carga masiva, pero
-# algunos códigos puntuales (tipo de comprobante exacto de la Tabla 10,
-# por ejemplo) no pude verificarlos byte a byte contra el Anexo 3
-# oficial. Antes de presentar en un período real, valida el archivo con
-# el propio PDT PLAME (te marca inconsistencias fila por fila) o con tu
-# contador. ---
+#   .4ta = Estructura 20 — Detalle de Comprobantes
+# ✅ Esta vez la estructura de campos viene directo de la macro oficial
+# de SUNAT (GenPE_PLAME_PS4ta), leída campo por campo (hoja
+# "E7_Prestadores" y "E20_DetalleCP") — no es una aproximación.
+
+TABLA3_TIPO_DOCUMENTO = {"DNI": "1", "RUC": "06", "CE": "4", "PASAPORTE": "7"}
+
+
+def _codigo_tipo_documento(tipo_doc_texto):
+    return TABLA3_TIPO_DOCUMENTO.get(str(tipo_doc_texto).strip().upper(), "1")
+
+
+def _dividir_nombre_completo(nombre_completo, es_ruc):
+    """SUNAT no nos da los apellidos/nombres del prestador separados
+    (el .txt trae 'VACA VALDERRAMA PABLO EFRAIN' todo junto) — esto es
+    una aproximación: si es RUC (empresa), todo va en 'apellido
+    paterno' como razón social; si es persona natural, se asume que
+    las primeras 2 palabras son los apellidos y el resto los nombres.
+    Revísalo con tu contador si algún nombre queda mal dividido."""
+    palabras = str(nombre_completo).strip().split()
+    if es_ruc or len(palabras) == 0:
+        return str(nombre_completo).strip(), "", ""
+    if len(palabras) == 1:
+        return palabras[0], "", ""
+    if len(palabras) == 2:
+        return palabras[0], "", palabras[1]
+    apellido_paterno = palabras[0]
+    apellido_materno = palabras[1]
+    nombres = " ".join(palabras[2:])
+    return apellido_paterno, apellido_materno, nombres
+
 
 def _nombre_archivo_plame_honorarios(ruc, periodo_texto, extension):
-    """Arma el nombre exacto que exige PLAME: 0601 + AAAAMM + RUC + ext.
-
-    ⚠️ CORREGIDO: la cartilla oficial del PDT PLAME (SUNAT) y el Anexo 3
-    indican que el archivo de prestadores debe tener extensión ".ps4"
-    (minúsculas), NO ".PS0" como se generaba antes. Con ".PS0" el PDT
-    PLAME ni siquiera muestra el archivo como seleccionable en su
-    diálogo de "Importar archivo" (que filtra por extensión) — por eso
-    antes solo se podía subir el .4TA."""
+    """Arma el nombre exacto que exige PLAME: 0601 + AAAAMM + RUC + ext."""
     aaaamm = periodo_texto.replace("-", "")
     ruc_limpio = str(ruc).strip().replace(" ", "")
     return f"0601{aaaamm}{ruc_limpio}.{extension}"
 
 
-def generar_plame_honorarios_ps4(df_honorarios, domiciliados=True):
-    """Archivo .ps4 (Estructura 7 del Anexo 3 — "Prestadores de
-    Servicios con Rentas de 4ta Categoría"), texto plano separado por
-    '|', sin encabezado.
-
-    Campos por línea, según la cartilla oficial del PDT PLAME:
-      1. Tipo de documento del prestador (Tabla 3: 1=DNI, 4=Carné Ext.,
-         6=RUC, 7=Pasaporte).
-      2. Número de documento del prestador.
-      3. Apellidos y nombres / razón social.
-      4. Indicador de domiciliado (Ley del IR): 1 = Domiciliado,
-         2 = No domiciliado.
-      5. Indicador de convenio para evitar la doble tributación:
-         0 = No tiene convenio, 1 = Sí tiene.
-
-    ⚠️ Se asume que todos los prestadores son domiciliados en Perú y sin
-    convenio de doble tributación (el caso normal para un Recibo por
-    Honorarios peruano). Si alguno de tus prestadores es no domiciliado
-    o tiene convenio, avísame para ajustar esos 2 campos por prestador.
-    """
+def generar_plame_honorarios_ps4(df_honorarios):
+    """Archivo .ps4 = Estructura 7 (Prestadores de Servicios 4ta Cat.),
+    7 campos separados por '|', sin encabezado:
+    1) Tipo doc. (Tabla 3) 2) N° documento 3) Apellido paterno
+    4) Apellido materno 5) Nombres 6) Domiciliado (1=Sí/2=No)
+    7) Convenio doble tributación (Tabla 25, 0=Ninguno)."""
     df_unicos = df_honorarios.drop_duplicates(subset=["nro_doc_emisor"])
     lineas = []
     for _, fila in df_unicos.iterrows():
-        tipo_doc = "6" if fila.get("tipo_doc_emisor") == "RUC" else "1"
+        es_ruc = str(fila.get("tipo_doc_emisor", "")).strip().upper() == "RUC"
+        ap_pat, ap_mat, nombres = _dividir_nombre_completo(
+            fila.get("nombre_emisor", ""), es_ruc
+        )
         campos = [
-            tipo_doc,
+            _codigo_tipo_documento(fila.get("tipo_doc_emisor", "DNI")),
             str(fila.get("nro_doc_emisor", "")),
-            str(fila.get("nombre_emisor", "")).strip(),
-            "1" if domiciliados else "2",  # domiciliado
-            "0",  # sin convenio de doble tributación
+            ap_pat,
+            ap_mat,
+            nombres,
+            "1",  # Domiciliado: se asume Sí por defecto
+            "0",  # Convenio doble tributación: Ninguno por defecto
         ]
         lineas.append("|".join(campos))
     return "\r\n".join(lineas)
 
 
 def generar_plame_honorarios_4ta(df_honorarios):
-    """Archivo .4ta (Estructura 20 del Anexo 3 — "Prestador de
-    Servicios con Rentas de 4ta Categoría: Detalle de comprobantes"),
-    texto plano separado por '|', sin encabezado.
-
-    Campos por línea, según la cartilla oficial del PDT PLAME:
-      1. Tipo de documento del prestador (mismo código que en el .ps4,
-         debe coincidir para que PLAME vincule el comprobante con el
-         prestador ya importado).
-      2. Número de documento del prestador.
-      3. Tipo de comprobante (Tabla 10).
-      4. Serie del comprobante.
-      5. Número del comprobante.
-      6. Fecha de emisión (DD/MM/AAAA).
-      7. Fecha de pago (DD/MM/AAAA) — debe caer dentro del período que
-         se está declarando.
-      8. Monto total de la retribución del servicio (renta bruta).
-      9. Indicador de retención del IR de 4ta: 0 = No aplica,
-         1 = Sí aplica.
-     10. Monto retenido del IR de 4ta categoría.
-
-    ⚠️ IMPORTANTE — sigue sin estar 100% verificado: no encontré el PDF
-    oficial completo del "Anexo 3" con el código exacto de la Tabla 10
-    (tipo de comprobante) para "Recibo por Honorarios Electrónico", así
-    que ese campo se deja como texto tal cual viene del archivo de
-    SUNAT ("tipo_doc"). Antes de presentar en un período real, valida
-    el archivo generado con el propio PDT PLAME (que te marca
-    inconsistencias) o con tu contador.
-    """
+    """Archivo .4ta = Estructura 20 (Detalle de Comprobantes), 11
+    campos separados por '|', sin encabezado:
+    1) Tipo doc. 2) N° documento 3) Tipo comprobante (Tabla 23, R=Recibo
+    por Honorarios) 4) Serie 5) Número 6) Monto total del servicio
+    7) Fecha de emisión (dd/mm/aaaa) 8) Fecha de pago (dd/mm/aaaa)
+    9) Indicador Retención 4ta (1=Sí/0=No) 10) Indicador Retención
+    Régimen Pensionario (1=ONP/2=SPP/3=Sin retención) 11) Importe del
+    aporte al Régimen Pensionario (vacío si el campo 10 es 3 — no
+    manejamos aportes pensionarios de prestadores en este sistema, así
+    que siempre se envía 3 y este campo va vacío)."""
     lineas = []
     for _, fila in df_honorarios.iterrows():
-        tipo_doc = "6" if fila.get("tipo_doc_emisor") == "RUC" else "1"
+        es_ruc = str(fila.get("tipo_doc_emisor", "")).strip().upper() == "RUC"
         impuesto = float(fila.get("impuesto_renta", 0) or 0)
-        indicador_retencion = "1" if impuesto > 0 else "0"
+        indicador_retencion_4ta = "1" if impuesto > 0 else "0"
         campos = [
-            tipo_doc,
+            _codigo_tipo_documento(fila.get("tipo_doc_emisor", "DNI")),
             str(fila.get("nro_doc_emisor", "")),
-            str(fila.get("tipo_doc", "")).strip(),
+            "R",  # Tipo comprobante: Recibo por Honorarios
             str(fila.get("serie", "")),
             str(fila.get("numero", "")),
-            str(fila.get("fecha_emision", "")),
-            str(fila.get("fecha_emision", "")),  # fecha de pago (no la registramos aparte todavía; se usa la misma de emisión)
             f"{float(fila.get('renta_bruta', 0) or 0):.2f}",
-            indicador_retencion,
-            f"{impuesto:.2f}",
+            str(fila.get("fecha_emision", "")),
+            str(fila.get("fecha_emision", "")),  # fecha de pago (no la registramos aparte; se usa la de emisión)
+            indicador_retencion_4ta,
+            "3",  # Sin retención de régimen pensionario / no aplica
+            "",  # vacío porque el campo 10 es 3
         ]
         lineas.append("|".join(campos))
     return "\r\n".join(lineas)
@@ -8990,25 +8975,25 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                     if st.button(
                         "📋 Generar Carga Masiva a PLAME (.ps4 + .4ta)",
                         help=(
-                            "⚠️ Genera los 2 archivos de texto plano que"
-                            " pide PLAME (separados por '|', con el"
-                            " nombre y extensión exacta que exige el"
-                            " sistema: .ps4 y .4ta), listos para"
-                            " 'Importar archivo' en la pestaña PS 4ta"
-                            " Categoría. Algunos códigos puntuales (tipo"
-                            " de comprobante) no están 100% verificados —"
-                            " revísalo antes de una presentación real."
+                            "Genera los 2 archivos de texto plano que"
+                            " pide PLAME (Estructura 7 y Estructura 20,"
+                            " separados por '|', con el nombre exacto que"
+                            " exige el sistema), listos para 'Importar"
+                            " archivo' en la pestaña PS 4ta Categoría."
                         ),
                     ):
-                        st.warning(
-                            "⚠️ El nombre de archivo, las extensiones"
-                            " (.ps4 y .4ta) y el separador '|' están"
-                            " confirmados según la cartilla oficial del"
-                            " PDT PLAME. El código exacto del 'tipo de"
-                            " comprobante' (Tabla 10) no pude verificarlo"
-                            " byte a byte contra el Anexo 3 oficial —"
-                            " pruébalo primero con la opción 'validar'"
-                            " del propio PDT PLAME antes de presentarlo."
+                        st.info(
+                            "✅ La estructura de campos (7 columnas en"
+                            " .ps4, 11 en .4ta) sale directo de la macro"
+                            " oficial de SUNAT, campo por campo — no es"
+                            " una aproximación. Lo único que sí es una"
+                            " suposición razonable: como el archivo"
+                            " original de SUNAT no separa apellidos y"
+                            " nombres del prestador, aquí se dividen"
+                            " automáticamente asumiendo que las primeras"
+                            " 2 palabras son los apellidos — revisa que"
+                            " ningún nombre haya quedado mal dividido"
+                            " antes de importar."
                         )
                         razon_social_p, ruc_p = _obtener_datos_empresa(
                             df_empresas
@@ -9042,7 +9027,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                             )
                             st.caption(
                                 "Descomprime el .zip en una carpeta — los"
-                                " 2 archivos (.ps4 y .4ta) deben quedar"
+                                " 2 archivos (.PS0 y .4TA) deben quedar"
                                 " juntos ahí para que PLAME los pueda"
                                 " importar."
                             )
