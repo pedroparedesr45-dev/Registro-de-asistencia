@@ -2025,10 +2025,15 @@ def generar_plame_honorarios_4ta(df_honorarios):
     por Honorarios) 4) Serie 5) Número 6) Monto total del servicio
     7) Fecha de emisión (dd/mm/aaaa) 8) Fecha de pago (dd/mm/aaaa)
     9) Indicador Retención 4ta (1=Sí/0=No) 10) Indicador Retención
-    Régimen Pensionario (1=ONP/2=SPP/3=Sin retención) 11) Importe del
-    aporte al Régimen Pensionario (vacío si el campo 10 es 3 — no
-    manejamos aportes pensionarios de prestadores en este sistema, así
-    que siempre se envía 3 y este campo va vacío).
+    Régimen Pensionario 11) Importe del aporte al Régimen Pensionario.
+
+    CAMPO 10 — CONFIRMADO CON UN CASO REAL RECHAZADO Y CORREGIDO POR EL
+    USUARIO: aunque la tabla de referencia de SUNAT dice que "3" es un
+    valor válido para "Sin retención / No aplica", en la práctica PLAME
+    lo RECHAZA — hay que dejarlo VACÍO cuando no hay retención de
+    régimen pensionario, no poner "3". No manejamos aportes
+    pensionarios de prestadores en este sistema, así que este campo
+    siempre va vacío (y el campo 11 también, por la misma razón).
 
     IMPORTANTE (confirmado byte a byte contra un archivo real generado
     por la macro oficial de SUNAT): cada línea también lleva una BARRA
@@ -2047,8 +2052,8 @@ def generar_plame_honorarios_4ta(df_honorarios):
             str(fila.get("fecha_emision", "")),
             str(fila.get("fecha_emision", "")),  # fecha de pago (no la registramos aparte; se usa la de emisión)
             indicador_retencion_4ta,
-            "3",  # Sin retención de régimen pensionario / no aplica
-            "",  # vacío porque el campo 10 es 3
+            "",  # Retención régimen pensionario: VACÍO, no "3" (ver nota arriba)
+            "",  # Importe del aporte: vacío, va junto con el campo 10
             "",  # columna extra vacía al final (confirmada en archivo real)
         ]
         lineas.append("|".join(campos))
