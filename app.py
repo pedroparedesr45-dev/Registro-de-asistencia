@@ -1942,45 +1942,81 @@ def cargar_todos_honorarios_supabase(supabase, empresa_id):
         return None
 
 
-# --- PLAME para Recibos por Honorarios: Estructura 7 (Prestadores de
-# Servicios) + Estructura 20 (Detalle de comprobantes de 4ta) — ⚠️
-# BORRADOR, con los campos conceptuales que exige SUNAT, sin verificar
-# todavía las posiciones/anchos exactos del Anexo 3 oficial. ---
+# --- PLAME para Recibos por Honorarios: PDT PLAME importa 2 archivos
+# de TEXTO PLANO (no Excel), separados por "|", con nombre de archivo
+# obligatorio: "0601" + AAAAMM (período) + RUC + extensión.
+#   .PS0 = Datos del Prestador de Servicios
+#   .4TA = Detalle de Recibos por Honorarios del período
+# ⚠️ BORRADOR: la nomenclatura del archivo y el delimitador "|" están
+# confirmados; el orden exacto de columnas dentro de cada línea es mi
+# mejor estimado a partir de los campos típicos de estas estructuras —
+# no viene de un documento oficial verificado campo por campo, así que
+# revísalo con tu contador o con el propio validador de PLAME antes de
+# usarlo en una presentación real. ---
 
-def generar_plame_honorarios_estructura7(df_honorarios):
-    """Borrador de la Estructura 7 — registro de los prestadores de
-    servicios (uno por cada RUC/DNI distinto que emitió recibos)."""
+def _nombre_archivo_plame_honorarios(ruc, periodo_texto, extension):
+    """Arma el nombre exacto que exige PLAME: 0601 + AAAAMM + RUC + ext."""
+    aaaamm = periodo_texto.replace("-", "")
+    ruc_limpio = str(ruc).strip().replace(" ", "")
+    return f"0601{aaaamm}{ruc_limpio}.{extension}"
+
+
+def generar_plame_honorarios_ps0(df_honorarios):
+    """Archivo .PS0 (texto plano, separado por '|'): datos de cada
+    prestador de servicios distinto que emitió recibos, sin encabezado
+    — igual que el formato AFPnet, PLAME no acepta encabezados."""
     df_unicos = df_honorarios.drop_duplicates(subset=["nro_doc_emisor"])
-    filas = []
+    lineas = []
     for _, fila in df_unicos.iterrows():
-        filas.append({
-            "Tipo Doc.": "6" if fila.get("tipo_doc_emisor") == "RUC" else "1",
-            "Nro. Documento": fila.get("nro_doc_emisor", ""),
-            "Apellidos y Nombres / Razón Social": fila.get("nombre_emisor", ""),
-        })
-    return pd.DataFrame(filas)
+        tipo_doc = "6" if fila.get("tipo_doc_emisor") == "RUC" else "1"
+        campos = [
+            tipo_doc,
+            str(fila.get("nro_doc_emisor", "")),
+            str(fila.get("nombre_emisor", "")).strip(),
+        ]
+        lineas.append("|".join(campos))
+    return "\r\n".join(lineas)
 
 
-def generar_plame_honorarios_estructura20(df_honorarios, periodo_texto):
-    """Borrador de la Estructura 20 — detalle de cada comprobante
-    (recibo por honorarios) del período."""
-    filas = []
+def generar_plame_honorarios_4ta(df_honorarios, periodo_texto):
+    """Archivo .4TA (texto plano, separado por '|'): detalle de cada
+    recibo por honorarios del período, sin encabezado."""
+    aaaamm = periodo_texto.replace("-", "")
+    lineas = []
     for _, fila in df_honorarios.iterrows():
-        filas.append({
-            "Tipo Doc. Prestador": (
-                "6" if fila.get("tipo_doc_emisor") == "RUC" else "1"
-            ),
-            "Nro. Doc. Prestador": fila.get("nro_doc_emisor", ""),
-            "Periodo": periodo_texto.replace("-", ""),
-            "Tipo Comprobante": "Recibo por Honorarios",
-            "Serie": fila.get("serie", ""),
-            "Número": fila.get("numero", ""),
-            "Fecha Emisión": fila.get("fecha_emision", ""),
-            "Importe Bruto": float(fila.get("renta_bruta", 0) or 0),
-            "Retención 8%": float(fila.get("impuesto_renta", 0) or 0),
-            "Importe Neto": float(fila.get("renta_neta", 0) or 0),
-        })
-    return pd.DataFrame(filas)
+        tipo_doc = "6" if fila.get("tipo_doc_emisor") == "RUC" else "1"
+        campos = [
+            tipo_doc,
+            str(fila.get("nro_doc_emisor", "")),
+            aaaamm,
+            str(fila.get("serie", "")),
+            str(fila.get("numero", "")),
+            str(fila.get("fecha_emision", "")),
+            str(fila.get("fecha_emision", "")),  # fecha de pago (no la registramos aparte todavía; se usa la misma de emisión)
+            "PEN",
+            f"{float(fila.get('renta_bruta', 0) or 0):.2f}",
+            f"{float(fila.get('impuesto_renta', 0) or 0):.2f}",
+            f"{float(fila.get('renta_neta', 0) or 0):.2f}",
+        ]
+        lineas.append("|".join(campos))
+    return "\r\n".join(lineas)
+
+
+def generar_zip_plame_honorarios(df_honorarios, ruc, periodo_texto):
+    """Empaqueta los 2 archivos (.PS0 y .4TA) juntos en un .zip, con
+    los nombres exactos que exige PLAME, listos para descomprimir en
+    una carpeta y usar 'Importar archivo' en el PDT."""
+    nombre_ps0 = _nombre_archivo_plame_honorarios(ruc, periodo_texto, "PS0")
+    nombre_4ta = _nombre_archivo_plame_honorarios(ruc, periodo_texto, "4TA")
+    contenido_ps0 = generar_plame_honorarios_ps0(df_honorarios)
+    contenido_4ta = generar_plame_honorarios_4ta(df_honorarios, periodo_texto)
+
+    buffer_zip = io.BytesIO()
+    with zipfile.ZipFile(buffer_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(nombre_ps0, contenido_ps0)
+        zf.writestr(nombre_4ta, contenido_4ta)
+    buffer_zip.seek(0)
+    return buffer_zip.getvalue(), nombre_ps0, nombre_4ta
 
 
 def generar_excel_honorarios(
@@ -8895,59 +8931,61 @@ elif opcion == "🔐 Panel de Gestión / Admin":
 
                     st.divider()
                     if st.button(
-                        "📋 Generar Carga Masiva a PLAME (borrador)",
+                        "📋 Generar Carga Masiva a PLAME (.PS0 + .4TA)",
                         help=(
-                            "⚠️ Borrador con las Estructuras 7 y 20 que"
-                            " pide PLAME para Recibos por Honorarios —"
-                            " no verificado todavía contra el formato"
-                            " oficial exacto de SUNAT."
+                            "⚠️ Genera los 2 archivos de texto plano que"
+                            " pide PLAME (separados por '|', con el"
+                            " nombre exacto que exige el sistema), listos"
+                            " para 'Importar archivo' en la pestaña PS 4ta"
+                            " Categoría. El orden de columnas dentro de"
+                            " cada línea es mi mejor estimado — revísalo"
+                            " antes de una presentación real."
                         ),
                     ):
                         st.warning(
-                            "⚠️ Estos 2 archivos son un BORRADOR — tienen"
-                            " los campos conceptuales de las Estructuras"
-                            " 7 y 20 de PLAME, pero no se verificaron"
-                            " todavía contra el formato exacto oficial."
-                            " Revísalos con tu contador antes de"
-                            " importarlos al PDT PLAME."
+                            "⚠️ El nombre de archivo y el separador '|'"
+                            " están confirmados según las reglas de"
+                            " PLAME. El orden exacto de las columnas"
+                            " dentro de cada línea es mi mejor estimado"
+                            " a partir de los campos típicos — no viene"
+                            " de un documento oficial verificado campo"
+                            " por campo. Pruébalo primero con la opción"
+                            " 'validar' del propio PDT PLAME antes de"
+                            " presentarlo."
                         )
-                        df_estruct7 = generar_plame_honorarios_estructura7(
-                            df_hon_vista
+                        razon_social_p, ruc_p = _obtener_datos_empresa(
+                            df_empresas
                         )
-                        df_estruct20 = generar_plame_honorarios_estructura20(
-                            df_hon_vista, periodo_hon
-                        )
-                        buf7 = io.BytesIO()
-                        df_estruct7.to_excel(buf7, index=False, engine="openpyxl")
-                        buf20 = io.BytesIO()
-                        df_estruct20.to_excel(buf20, index=False, engine="openpyxl")
-
-                        col_plame1, col_plame2 = st.columns(2)
-                        with col_plame1:
-                            st.download_button(
-                                "💾 Estructura 7 (Prestadores)",
-                                data=buf7.getvalue(),
-                                file_name=(
-                                    f"PLAME_Estructura7_{periodo_hon}.xlsx"
-                                ),
-                                mime=(
-                                    "application/vnd.openxmlformats"
-                                    "-officedocument.spreadsheetml.sheet"
-                                ),
-                                use_container_width=True,
-                                key="descargar_estructura7",
+                        if not ruc_p:
+                            st.error(
+                                "No encontré el RUC de esta empresa —"
+                                " complétalo en Gestión de Empresas antes"
+                                " de generar estos archivos (el nombre"
+                                " del archivo lo necesita sí o sí)."
                             )
-                        with col_plame2:
+                        else:
+                            zip_bytes, nombre_ps0, nombre_4ta = (
+                                generar_zip_plame_honorarios(
+                                    df_hon_vista, ruc_p, periodo_hon
+                                )
+                            )
+                            st.caption(
+                                f"Archivos: `{nombre_ps0}` y `{nombre_4ta}`"
+                            )
                             st.download_button(
-                                "💾 Estructura 20 (Comprobantes)",
-                                data=buf20.getvalue(),
+                                "💾 Descargar carpeta (.zip con ambos"
+                                " archivos)",
+                                data=zip_bytes,
                                 file_name=(
-                                    f"PLAME_Estructura20_{periodo_hon}.xlsx"
+                                    f"PLAME_Honorarios_{periodo_hon}.zip"
                                 ),
-                                mime=(
-                                    "application/vnd.openxmlformats"
-                                    "-officedocument.spreadsheetml.sheet"
-                                ),
+                                mime="application/zip",
                                 use_container_width=True,
-                                key="descargar_estructura20",
+                                key="descargar_plame_honorarios_zip",
+                            )
+                            st.caption(
+                                "Descomprime el .zip en una carpeta — los"
+                                " 2 archivos (.PS0 y .4TA) deben quedar"
+                                " juntos ahí para que PLAME los pueda"
+                                " importar."
                             )
