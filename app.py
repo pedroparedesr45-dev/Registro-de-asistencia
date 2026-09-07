@@ -2050,7 +2050,11 @@ def calcular_planilla_trabajador(
         return float(v) if v not in (None, "") else float(default)
 
     sueldo_basico = float(fila_emp.get("sueldo_basico", 0) or 0)
-    rem_vacacional = _n("remuneracion_vacacional")
+    dias_vacaciones_tomadas = _n("dias_vacaciones_tomadas")
+    rem_vacacional_auto = round(
+        (sueldo_basico / 30) * dias_vacaciones_tomadas, 2
+    )
+    rem_vacacional = _n("remuneracion_vacacional", rem_vacacional_auto)
 
     JORNADA_MINUTOS = 480  # 8 horas, la hora de almuerzo no se cuenta
     minutos_esperados = dias_laborados * JORNADA_MINUTOS
@@ -2986,41 +2990,17 @@ def render_custom_table(lista_registros):
     return "".join(html_lines)
 
 
-def generar_planilla_excel_completa(
-    df_empleados, df_asistencia, df_empresas, mes_sel, anio_sel, supabase
+def _construir_hoja_planilla(
+    ws, df_empleados, df_asistencia, razon_social, ruc, mes_sel, anio_sel,
+    supabase,
 ):
-    """Genera el Excel de Planilla con el mismo formato/encabezado de tu
-    archivo original (razón social, RUC, título, mes, y las mismas
-    agrupaciones de columnas: Datos del Trabajador / Contrato / Control
-    Asistencia / Ingresos / Descuentos / Retenciones / Aportaciones).
-
-    Los valores se escriben ya calculados (no como fórmulas de Excel):
-    dado que el original usa fórmulas de array muy específicas de sus
-    Tablas de Excel, replicarlas tal cual habría sido fràgil; en cambio,
-    el cálculo se hace en Python (misma lógica, ver
-    calcular_planilla_trabajador) y se entrega como un reporte ya
-    resuelto y verificable."""
+    """Llena una hoja de Excel ya creada con la planilla completa de un
+    mes específico (mismo formato/encabezado del archivo original). Se
+    separó de generar_planilla_excel_completa para poder reutilizarla
+    también en la descarga anual (12 hojas, una por mes) sin duplicar
+    la lógica."""
     prefix_periodo = f"{anio_sel}-{mes_sel:02d}"
     df_empleados = df_empleados.sort_values("nombre").reset_index(drop=True)
-
-    fila_empresa = (
-        df_empresas[
-            df_empresas["empresa_id"].astype(str)
-            == str(st.session_state.empresa_id)
-        ]
-        if df_empresas is not None and not df_empresas.empty
-        else pd.DataFrame()
-    )
-    razon_social = (
-        fila_empresa.iloc[0].get("razon_social", "")
-        if not fila_empresa.empty
-        else st.session_state.empresa_id
-    )
-    ruc = fila_empresa.iloc[0].get("ruc", "") if not fila_empresa.empty else ""
-
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "PLANILLA"
 
     font_titulo_emp = Font(name="Calibri", bold=True, size=13)
     font_normal = Font(name="Calibri", size=10)
@@ -3198,6 +3178,69 @@ def generar_planilla_excel_completa(
     ws.page_setup.fitToHeight = 0
     ws.sheet_properties.pageSetUpPr.fitToPage = True
 
+
+def _obtener_datos_empresa(df_empresas):
+    """Devuelve (razon_social, ruc) de la empresa actualmente
+    seleccionada, con un valor de respaldo si no se encuentra."""
+    fila_empresa = (
+        df_empresas[
+            df_empresas["empresa_id"].astype(str)
+            == str(st.session_state.empresa_id)
+        ]
+        if df_empresas is not None and not df_empresas.empty
+        else pd.DataFrame()
+    )
+    razon_social = (
+        fila_empresa.iloc[0].get("razon_social", "")
+        if not fila_empresa.empty
+        else st.session_state.empresa_id
+    )
+    ruc = fila_empresa.iloc[0].get("ruc", "") if not fila_empresa.empty else ""
+    return razon_social, ruc
+
+
+def generar_planilla_excel_completa(
+    df_empleados, df_asistencia, df_empresas, mes_sel, anio_sel, supabase
+):
+    """Genera el Excel de Planilla de UN mes, con el mismo formato/
+    encabezado de tu archivo original (razón social, RUC, título, mes,
+    y las mismas agrupaciones de columnas: Datos del Trabajador /
+    Contrato / Control Asistencia / Ingresos / Descuentos / Retenciones
+    / Aportaciones).
+
+    Los valores se escriben ya calculados (no como fórmulas de Excel):
+    dado que el original usa fórmulas de array muy específicas de sus
+    Tablas de Excel, replicarlas tal cual habría sido fràgil; en cambio,
+    el cálculo se hace en Python (misma lógica, ver
+    calcular_planilla_trabajador) y se entrega como un reporte ya
+    resuelto y verificable."""
+    razon_social, ruc = _obtener_datos_empresa(df_empresas)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "PLANILLA"
+    _construir_hoja_planilla(
+        ws, df_empleados, df_asistencia, razon_social, ruc, mes_sel,
+        anio_sel, supabase,
+    )
+    output = io.BytesIO()
+    wb.save(output)
+    return output.getvalue()
+
+
+def generar_planilla_excel_anual(
+    df_empleados, df_asistencia, df_empresas, anio_sel, supabase
+):
+    """Genera un solo Excel con 12 pestañas (una por mes de 'anio_sel'),
+    cada una con el mismo formato completo de la planilla mensual."""
+    razon_social, ruc = _obtener_datos_empresa(df_empresas)
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+    for mes in range(1, 13):
+        ws = wb.create_sheet(title=MESES_NOMBRES[mes][:31])
+        _construir_hoja_planilla(
+            ws, df_empleados, df_asistencia, razon_social, ruc, mes,
+            anio_sel, supabase,
+        )
     output = io.BytesIO()
     wb.save(output)
     return output.getvalue()
@@ -5359,6 +5402,20 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                         f"{minutos_extra_acumulados} min",
                         delta=min_a_formato_horas(minutos_extra_acumulados),
                     )
+                    if minutos_extra_acumulados > 0:
+                        if st.session_state.permitir_horas_extra:
+                            st.caption(
+                                "✅ Esta empresa reconoce y paga horas"
+                                " extra — estos minutos sí se están"
+                                " calculando en la Planilla."
+                            )
+                        else:
+                            st.caption(
+                                "ℹ️ Esta empresa tiene las horas extra"
+                                " desactivadas — estos minutos quedan"
+                                " registrados como referencia, pero no"
+                                " se pagan en la Planilla."
+                            )
 
                     st.divider()
 
@@ -7149,12 +7206,40 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                             "🟢 Ocasional (bonos especiales, montos que casi"
                             " no cambian)"
                         ):
+                            v_dias_vac_tomadas = st.number_input(
+                                "Días de Vacaciones Tomadas este Período:",
+                                min_value=0, max_value=30, step=1,
+                                value=int(_v("dias_vacaciones_tomadas")),
+                                key="v_dias_vac_tomadas",
+                                help=(
+                                    "Cuántos días de vacaciones tomó el"
+                                    " trabajador en este período. Con eso"
+                                    " se calcula solo la Remuneración"
+                                    " Vacacional de abajo (editable si"
+                                    " hace falta ajustarla)."
+                                ),
+                            )
+                            _rem_vac_sug = round(
+                                (
+                                    float(
+                                        fila_var.get("sueldo_basico", 0) or 0
+                                    )
+                                    / 30
+                                )
+                                * v_dias_vac_tomadas,
+                                2,
+                            )
                             col_v5, col_v6, col_v7 = st.columns(3)
                             with col_v5:
                                 v_rem_vac = st.number_input(
-                                    "Remuneración Vacacional (S/):",
+                                    "Remuneración Vacacional (S/,"
+                                    " calculada automática desde los días"
+                                    " de arriba):",
                                     min_value=0.0,
-                                    value=_v("remuneracion_vacacional"),
+                                    value=_v(
+                                        "remuneracion_vacacional",
+                                        _rem_vac_sug,
+                                    ),
                                     key="v_rem_vac",
                                 )
                                 v_comp_vac = st.number_input(
@@ -7256,6 +7341,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 "dni": dni_var,
                                 "periodo": prefix_periodo_planilla,
                                 "remuneracion_vacacional": v_rem_vac,
+                                "dias_vacaciones_tomadas": v_dias_vac_tomadas,
                                 "vacaciones_truncas": v_vac_truncas,
                                 "compensacion_vacacional": v_comp_vac,
                                 "dia_feriado_descanso": v_feriado,
@@ -7302,35 +7388,69 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 )
 
                 st.divider()
-                if st.button(
-                    "📥 Generar Planilla Completa (Excel)",
-                    type="primary",
-                    use_container_width=True,
-                ):
-                    with st.spinner(
-                        "💰 Calculando planilla completa del período..."
-                    ):
-                        planilla_bytes = generar_planilla_excel_completa(
-                            df_empleados,
-                            df_asistencia,
-                            df_empresas,
-                            mes_planilla,
-                            anio_planilla,
-                            supabase,
-                        )
-                    st.download_button(
-                        label="💾 Confirmar Descarga de Planilla",
-                        data=planilla_bytes,
-                        file_name=(
-                            f"Planilla_{st.session_state.empresa_id}_"
-                            f"{mes_nombre_planilla}_{anio_planilla}.xlsx"
-                        ),
-                        mime=(
-                            "application/vnd.openxmlformats-officedocument"
-                            ".spreadsheetml.sheet"
-                        ),
+                col_desc1, col_desc2 = st.columns(2)
+                with col_desc1:
+                    if st.button(
+                        "📥 Descargar Planilla del Mes (Excel)",
+                        type="primary",
                         use_container_width=True,
-                    )
+                    ):
+                        with st.spinner(
+                            "💰 Calculando planilla del período..."
+                        ):
+                            planilla_bytes = generar_planilla_excel_completa(
+                                df_empleados,
+                                df_asistencia,
+                                df_empresas,
+                                mes_planilla,
+                                anio_planilla,
+                                supabase,
+                            )
+                        st.download_button(
+                            label="💾 Confirmar Descarga Mensual",
+                            data=planilla_bytes,
+                            file_name=(
+                                f"Planilla_{st.session_state.empresa_id}_"
+                                f"{mes_nombre_planilla}_{anio_planilla}.xlsx"
+                            ),
+                            mime=(
+                                "application/vnd.openxmlformats-officedocument"
+                                ".spreadsheetml.sheet"
+                            ),
+                            use_container_width=True,
+                            key="descargar_planilla_mensual",
+                        )
+                with col_desc2:
+                    if st.button(
+                        "📅 Descargar Planilla Anual (12 pestañas)",
+                        use_container_width=True,
+                    ):
+                        with st.spinner(
+                            "💰 Calculando la planilla de los 12 meses"
+                            f" de {anio_planilla}... esto puede tardar"
+                            " un poco más."
+                        ):
+                            planilla_anual_bytes = generar_planilla_excel_anual(
+                                df_empleados,
+                                df_asistencia,
+                                df_empresas,
+                                anio_planilla,
+                                supabase,
+                            )
+                        st.download_button(
+                            label="💾 Confirmar Descarga Anual",
+                            data=planilla_anual_bytes,
+                            file_name=(
+                                f"Planilla_Anual_{st.session_state.empresa_id}"
+                                f"_{anio_planilla}.xlsx"
+                            ),
+                            mime=(
+                                "application/vnd.openxmlformats-officedocument"
+                                ".spreadsheetml.sheet"
+                            ),
+                            use_container_width=True,
+                            key="descargar_planilla_anual",
+                        )
 
                 st.info(
                     "📌 Fase 1, 2a y 2b completas: asistencia, datos"
