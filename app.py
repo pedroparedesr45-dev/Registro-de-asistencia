@@ -2162,8 +2162,20 @@ def calcular_planilla_trabajador(
     )
     rem_vacacional = _n("remuneracion_vacacional", rem_vacacional_auto)
 
+    # CORRECCIÓN IMPORTANTE: el sueldo se paga sobre 30 días CALENDARIO,
+    # no sobre los días que realmente tienen marcación de asistencia.
+    # Un trabajador que marca, por ejemplo, de lunes a sábado (26 días)
+    # sigue cobrando el mes completo (30 días) porque los domingos son
+    # descanso PAGADO — no hace falta marcar ese día para que se pague.
+    # Por eso la base ya NO es "dias_laborados" (que solo cuenta días
+    # con marcación) sino 30 menos los DÍAS DE FALTA reales que se
+    # ingresan a mano (ver 'dias_falta' más abajo) — así, sin faltas, el
+    # trabajador siempre cobra su sueldo básico completo.
+    dias_falta = _n("dias_falta")
+    dias_pagados_base = max(30 - dias_falta, 0)
+
     JORNADA_MINUTOS = 480  # 8 horas, la hora de almuerzo no se cuenta
-    minutos_esperados = dias_laborados * JORNADA_MINUTOS
+    minutos_esperados = dias_pagados_base * JORNADA_MINUTOS
     minutos_efectivos = max(minutos_esperados - minutos_no_laborados, 0)
     dias_efectivos = (
         minutos_efectivos / JORNADA_MINUTOS if JORNADA_MINUTOS else 0
@@ -2238,7 +2250,6 @@ def calcular_planilla_trabajador(
     # y con la fórmula real de tu Excel: por cada día de falta se
     # descuenta el día no laborado + un treintavo adicional por el
     # dominical perdido).
-    dias_falta = _n("dias_falta")
     valor_dia = sueldo_basico / 30 if sueldo_basico else 0
     descuento_dias_falta = round(valor_dia * dias_falta, 2)
     descuento_dominical = round((valor_dia / 30) * dias_falta, 2)
@@ -3128,17 +3139,32 @@ def _construir_hoja_planilla(
     prefix_periodo = f"{anio_sel}-{mes_sel:02d}"
     df_empleados = df_empleados.sort_values("nombre").reset_index(drop=True)
 
-    font_titulo_emp = Font(name="Calibri", bold=True, size=13, color="16213E")
+    font_titulo_emp = Font(name="Mont", bold=True, size=16, color="16213E")
+    font_subtitulo_emp = Font(name="Mont", bold=True, size=11, color="002060")
     font_normal = Font(name="Calibri", size=9.5)
+    font_normal_bold = Font(name="Calibri", size=9.5, bold=True, color="16213E")
     font_header_col = Font(name="Calibri", bold=True, size=8, color="FFFFFF")
 
-    # Colores REALES sacados de tu archivo Excel (no aproximados).
+    # Colores REALES sacados de tu archivo Excel (para los encabezados) +
+    # una versión clara de cada uno para "pintar" las columnas de datos
+    # por sección — así se distingue de un vistazo a qué grupo
+    # pertenece cada número, mucho más colorido y fácil de leer.
     COLOR_NAVY = "002060"
     COLOR_VERDE = "00B050"
     COLOR_ROJO = "C00000"
     fill_navy = PatternFill(start_color=COLOR_NAVY, end_color=COLOR_NAVY, fill_type="solid")
     fill_verde = PatternFill(start_color=COLOR_VERDE, end_color=COLOR_VERDE, fill_type="solid")
     fill_rojo = PatternFill(start_color=COLOR_ROJO, end_color=COLOR_ROJO, fill_type="solid")
+
+    # (color_header, color_claro_dato, color_total_dato)
+    TINTES = {
+        "datos": ("D9E2F3", "BDD0EB"),      # celeste claro
+        "asistencia": ("FFF2CC", "FFE59A"),  # ámbar claro
+        "ingresos": ("E2F0D9", "C6E0B4"),    # verde claro
+        "descuentos": ("FADBD8", "F1948A"),  # rojo/rosado claro
+        "retenciones": ("D6E4F0", "AAC7E8"), # azul claro
+        "aportes": ("E8DAEF", "D2B4DE"),     # morado claro
+    }
     border_thin = Border(
         left=Side(style="thin", color="D9D9D9"),
         right=Side(style="thin", color="D9D9D9"),
@@ -3153,7 +3179,7 @@ def _construir_hoja_planilla(
     ).font = font_titulo_emp
     ws.cell(
         row=4, column=2, value=f"MES DE {MESES_NOMBRES[mes_sel].upper()} {anio_sel}"
-    ).font = font_normal
+    ).font = font_subtitulo_emp
     _nombre_regimen = REGIMENES_LABORALES.get(
         st.session_state.get("regimen_laboral", "GENERAL"),
         REGIMENES_LABORALES["GENERAL"],
@@ -3164,26 +3190,32 @@ def _construir_hoja_planilla(
     ).font = Font(name="Calibri", size=9, italic=True, color="666666")
 
     # --- Grupos de columnas (fila 6), con sus colores reales y ancho
-    # (número de columnas) ---
+    # (número de columnas) — 'clave_tinte' define con qué color se
+    # pintan las columnas de DATOS de esa sección más abajo.
     grupos = [
-        ("DATOS DEL TRABAJADOR", 11, fill_navy),
-        ("CONTRATO", 10, fill_navy),
-        ("CONTROL ASISTENCIA", 3, fill_navy),
-        ("INGRESOS DEL TRABAJADOR", 20, fill_verde),
-        ("DESCUENTOS AL TRABAJADOR", 8, fill_rojo),
-        ("RETENCIONES AL TRABAJADOR", 6, fill_navy),
-        ("APORTACIONES DEL EMPLEADOR", 5, fill_navy),
+        ("DATOS DEL TRABAJADOR", 11, fill_navy, "datos"),
+        ("CONTRATO", 10, fill_navy, "datos"),
+        ("CONTROL ASISTENCIA", 3, fill_navy, "asistencia"),
+        ("INGRESOS DEL TRABAJADOR", 20, fill_verde, "ingresos"),
+        ("DESCUENTOS AL TRABAJADOR", 10, fill_rojo, "descuentos"),
+        ("RETENCIONES AL TRABAJADOR", 9, fill_navy, "retenciones"),
+        ("APORTACIONES DEL EMPLEADOR", 5, fill_navy, "aportes"),
     ]
     col_actual = 1
-    for nombre_grupo, ancho, fill_grupo in grupos:
+    mapa_col_a_tinte = {}  # columna -> (color_claro, color_total)
+    mapa_col_a_fill_grupo = {}  # columna -> PatternFill del grupo (para fila 7)
+    for nombre_grupo, ancho, fill_grupo, clave_tinte in grupos:
         ws.merge_cells(
             start_row=6, start_column=col_actual,
             end_row=6, end_column=col_actual + ancho - 1,
         )
         c = ws.cell(row=6, column=col_actual, value=nombre_grupo)
-        c.font = Font(name="Calibri", bold=True, size=10, color="FFFFFF")
+        c.font = Font(name="Mont", bold=True, size=10, color="FFFFFF")
         c.fill = fill_grupo
         c.alignment = Alignment(horizontal="center")
+        for cc in range(col_actual, col_actual + ancho):
+            mapa_col_a_tinte[cc] = TINTES[clave_tinte]
+            mapa_col_a_fill_grupo[cc] = fill_grupo
         col_actual += ancho
 
     # --- Columnas individuales (fila 7) + de dónde sale cada una,
@@ -3310,6 +3342,16 @@ def _construir_hoja_planilla(
             "= Inasistencias + Otros Deducibles + Otros + Otros Dsctos"
             " + Adelantos.",
         ),
+        (
+            "TOTAL REM. COMPUTABLE",
+            "= Ingresos afectos (hasta Subsidios) − Descuentos. Es la"
+            " base sobre la que se calculan AFP/ONP.",
+        ),
+        (
+            "TOTAL REM. COMPUTABLE CON SUBSIDIOS",
+            "= Total Rem. Computable − Subsidios. Es la base sobre la"
+            " que se calcula ESSALUD.",
+        ),
         ("TIPO APORTACIÓN", "AFP u ONP (Datos Maestros de Planilla)."),
         (
             "TOTAL ONP",
@@ -3317,9 +3359,22 @@ def _construir_hoja_planilla(
             " aportación es ONP).",
         ),
         (
+            "APORTE OBLIGATORIO",
+            "= 10% de la Remuneración Computable (igual en las 8 AFP).",
+        ),
+        (
+            "COMISIÓN AFP",
+            "= % de comisión de la AFP elegida × Rem. Computable (0%"
+            " en comisión mixta).",
+        ),
+        (
+            "PRIMA DE SEGURO",
+            "= 1.37% de la Remuneración Computable (igual en las 8 AFP).",
+        ),
+        (
             "TOTAL AFP",
-            "= Aporte Obligatorio (10%) + Comisión + Prima de Seguro,"
-            " con la tasa exacta de la AFP elegida.",
+            "= Aporte Obligatorio + Comisión + Prima de Seguro, con la"
+            " tasa exacta de la AFP elegida.",
         ),
         (
             "RENTA 5TA",
@@ -3348,7 +3403,7 @@ def _construir_hoja_planilla(
     for idx, (nombre_col, explicacion) in enumerate(columnas, start=1):
         c = ws.cell(row=7, column=idx, value=nombre_col)
         c.font = font_header_col
-        c.fill = fill_navy
+        c.fill = mapa_col_a_fill_grupo.get(idx, fill_navy)
         c.alignment = Alignment(
             horizontal="center", vertical="center", wrap_text=True
         )
@@ -3444,8 +3499,10 @@ def _construir_hoja_planilla(
             calc["tardanza_equivalente_soles"],
             calc["otros_deducibles"], calc["otros"], calc["otros_dsctos"],
             calc["adelantos"], calc["total_descuentos"],
+            calc["total_computable"], calc["total_computable_subsidios"],
             emp.get("tipo_aportacion", ""), calc["total_onp"],
-            calc["total_afp"], calc["renta_5ta"],
+            calc["aporte_obligatorio"], calc["comision_afp"],
+            calc["prima_seguro"], calc["total_afp"], calc["renta_5ta"],
             calc["total_retenciones"], calc["neto_a_pagar"],
             calc["sctr"], calc["essalud"], calc["seguro_vida_ley"],
             calc["total_aportes"], calc["costo_planilla"],
@@ -3453,7 +3510,26 @@ def _construir_hoja_planilla(
         for c_i, valor in enumerate(valores, start=1):
             cell = ws.cell(row=r, column=c_i, value=valor)
             cell.border = border_thin
-            cell.font = font_normal
+            nombre_col_actual = columnas[c_i - 1][0]
+            es_total = (
+                "TOTAL" in nombre_col_actual
+                or nombre_col_actual in ("NETO A PAGAR", "COSTO PLANILLA")
+            )
+            color_claro, color_total = mapa_col_a_tinte.get(
+                c_i, ("FFFFFF", "FFFFFF")
+            )
+            if es_total:
+                cell.fill = PatternFill(
+                    start_color=color_total, end_color=color_total,
+                    fill_type="solid",
+                )
+                cell.font = font_normal_bold
+            else:
+                cell.fill = PatternFill(
+                    start_color=color_claro, end_color=color_claro,
+                    fill_type="solid",
+                )
+                cell.font = font_normal
             if c_i >= 15 and isinstance(valor, (int, float)):
                 cell.number_format = "#,##0.00"
         r += 1
