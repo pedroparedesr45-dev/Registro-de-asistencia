@@ -908,6 +908,9 @@ if "mejoras_activadas_prod" not in st.session_state:
 if "permitir_horas_extra" not in st.session_state:
     st.session_state.permitir_horas_extra = False
 
+if "regimen_laboral" not in st.session_state:
+    st.session_state.regimen_laboral = "GENERAL"
+
 if "emp_login_ok" not in st.session_state:
     st.session_state.emp_login_ok = False
 if "emp_datos" not in st.session_state:
@@ -1443,6 +1446,9 @@ def cargar_configuracion_sistema(supabase, empresa_id):
             st.session_state.permitir_horas_extra = bool(
                 cfg.get("permitir_horas_extra", False)
             )
+            st.session_state.regimen_laboral = (
+                cfg.get("regimen_laboral") or "GENERAL"
+            )
     except Exception:
         pass  # si falla, se sigue usando lo que ya había cargado
 
@@ -1753,6 +1759,33 @@ TASA_ONP = 0.13
 TASA_ESSALUD = 0.09
 UIT_2026 = 5500.0
 
+# --- Régimen laboral (Ley N° 28015, D.Leg. N° 1086, D.S. N° 013-2013-
+# PRODUCE) — verificado contra 5 fuentes especializadas. Se aplica a
+# nivel EMPRESA (así funciona en la realidad: la inscripción en REMYPE
+# es por RUC, no por trabajador), igual que el interruptor de horas
+# extra. Afecta solo 3 beneficios; todo lo demás (AFP/ONP, ESSALUD,
+# renta 5ta, tardanzas, horas extra) es idéntico en los 3 regímenes.
+REGIMENES_LABORALES = {
+    "GENERAL": {
+        "nombre": "Régimen General (D. Leg. 728)",
+        "factor_gratificacion": 1.0,
+        "factor_cts": 1.0,
+        "factor_vacaciones": 1.0,  # 30 días/año
+    },
+    "MYPE_MICRO": {
+        "nombre": "MYPE — Microempresa",
+        "factor_gratificacion": 0.0,  # no se paga
+        "factor_cts": 0.0,  # no se paga
+        "factor_vacaciones": 0.5,  # 15 días/año
+    },
+    "MYPE_PEQUENA": {
+        "nombre": "MYPE — Pequeña Empresa",
+        "factor_gratificacion": 0.5,  # medio beneficio
+        "factor_cts": 0.5,  # medio beneficio
+        "factor_vacaciones": 0.5,  # 15 días/año
+    },
+}
+
 
 def cargar_planilla_periodo_supabase(supabase, empresa_id, dni, periodo):
     """Trae los datos variables (bonos, adelantos, etc.) ya guardados
@@ -1880,7 +1913,7 @@ def calcular_horas_extra_soles(sueldo_basico, minutos_extra_por_dia, permitir_ho
 
 def calcular_gratificacion(
     sueldo_basico, fecha_ingreso_txt, fecha_cese_txt, mes_sel, anio_sel,
-    regimen_salud,
+    regimen_salud, regimen_laboral="GENERAL",
 ):
     """Gratificación ordinaria (Ley 27735) — se paga en julio (semestre
     ene-jun) y diciembre (semestre jul-dic) — o gratificación TRUNCA si
@@ -1895,10 +1928,18 @@ def calcular_gratificacion(
 
     Fórmula: Remuneración Computable ÷ 6 × meses del semestre +
     bonificación extraordinaria (9% si aporta a EsSalud, 6.75% si está
-    en EPS — Ley 29351)."""
+    en EPS — Ley 29351). En régimen MYPE, se aplica el factor del
+    régimen: Microempresa no la paga (factor 0), Pequeña Empresa paga
+    la mitad (factor 0.5) — Ley 28015 / D.Leg. 1086."""
     fecha_ingreso = _parsear_fecha_flexible(fecha_ingreso_txt)
     fecha_cese = _parsear_fecha_flexible(fecha_cese_txt)
     if not fecha_ingreso or sueldo_basico <= 0:
+        return 0.0, 0.0
+
+    factor = REGIMENES_LABORALES.get(
+        regimen_laboral, REGIMENES_LABORALES["GENERAL"]
+    )["factor_gratificacion"]
+    if factor <= 0:
         return 0.0, 0.0
 
     if mes_sel <= 7:
@@ -1933,7 +1974,7 @@ def calcular_gratificacion(
     fraccion_extra = (dias_extra / 30) if es_trunca_por_cese else 0
     meses_totales = min(meses + fraccion_extra, 6)
 
-    gratificacion = round(sueldo_basico / 6 * meses_totales, 2)
+    gratificacion = round(sueldo_basico / 6 * meses_totales * factor, 2)
     tasa_bonif = 0.0675 if str(regimen_salud).upper() == "EPS" else 0.09
     bonificacion_9 = round(gratificacion * tasa_bonif, 2)
     return gratificacion, bonificacion_9
@@ -1941,7 +1982,7 @@ def calcular_gratificacion(
 
 def calcular_cts(
     sueldo_basico, fecha_ingreso_txt, fecha_cese_txt, mes_sel, anio_sel,
-    asignacion_familiar_monto, regimen_salud,
+    asignacion_familiar_monto, regimen_salud, regimen_laboral="GENERAL",
 ):
     """CTS (D.S. N° 001-97-TR) — se deposita en mayo (semestre nov-abr)
     y noviembre (semestre may-oct), o CTS TRUNCA si hay cese dentro del
@@ -1949,10 +1990,17 @@ def calcular_cts(
     gratificación (sin el 9%) + asignación familiar. CTS = computable
     ÷ 12 × meses del semestre (meses calendario completos, igual que la
     gratificación — ver esa función para el detalle de por qué no es
-    días÷30)."""
+    días÷30). En régimen MYPE, se aplica el factor: Microempresa no la
+    paga (factor 0), Pequeña Empresa paga la mitad (factor 0.5)."""
     fecha_ingreso = _parsear_fecha_flexible(fecha_ingreso_txt)
     fecha_cese = _parsear_fecha_flexible(fecha_cese_txt)
     if not fecha_ingreso or sueldo_basico <= 0:
+        return 0.0
+
+    factor = REGIMENES_LABORALES.get(
+        regimen_laboral, REGIMENES_LABORALES["GENERAL"]
+    )["factor_cts"]
+    if factor <= 0:
         return 0.0
 
     if mes_sel == 5:
@@ -1993,23 +2041,34 @@ def calcular_cts(
 
     ultima_gratif, _ = calcular_gratificacion(
         sueldo_basico, fecha_ingreso_txt, "", mes_ultima_gratif,
-        anio_ultima_gratif, regimen_salud,
+        anio_ultima_gratif, regimen_salud, regimen_laboral,
     )
     computable_cts = sueldo_basico + (ultima_gratif / 6) + asignacion_familiar_monto
-    return round(computable_cts / 12 * meses_totales, 2)
+    return round(computable_cts / 12 * meses_totales * factor, 2)
 
 
-def calcular_vacaciones_truncas(sueldo_basico, fecha_ingreso_txt, fecha_cese_txt, mes_sel, anio_sel):
+def calcular_vacaciones_truncas(
+    sueldo_basico, fecha_ingreso_txt, fecha_cese_txt, mes_sel, anio_sel,
+    regimen_laboral="GENERAL",
+):
     """Vacaciones truncas (D.Leg. 713, Art. 22-23) — solo aplica cuando
     hay una fecha de cese (escenario de liquidación), en el mes exacto
     del cese. Fórmula: sueldo mensual × (días desde el último
-    aniversario de ingreso hasta el cese ÷ 360)."""
+    aniversario de ingreso hasta el cese ÷ 360). En régimen MYPE (15
+    días de vacaciones/año en vez de 30), se aplica el factor 0.5 —
+    tanto Microempresa como Pequeña Empresa tienen el mismo derecho de
+    15 días, a diferencia de gratificación/CTS que sí varían entre
+    ellas."""
     fecha_ingreso = _parsear_fecha_flexible(fecha_ingreso_txt)
     fecha_cese = _parsear_fecha_flexible(fecha_cese_txt)
     if not fecha_ingreso or not fecha_cese or sueldo_basico <= 0:
         return 0.0
     if fecha_cese.month != mes_sel or fecha_cese.year != anio_sel:
         return 0.0
+
+    factor = REGIMENES_LABORALES.get(
+        regimen_laboral, REGIMENES_LABORALES["GENERAL"]
+    )["factor_vacaciones"]
 
     try:
         aniversario = fecha_ingreso.replace(year=fecha_cese.year)
@@ -2024,7 +2083,7 @@ def calcular_vacaciones_truncas(sueldo_basico, fecha_ingreso_txt, fecha_cese_txt
     dias = (fecha_cese - aniversario).days
     if dias <= 0:
         return 0.0
-    return round(sueldo_basico * (dias / 360), 2)
+    return round(sueldo_basico * (dias / 360) * factor, 2)
 
 
 def calcular_edad(fecha_nacimiento_txt, fecha_referencia=None):
@@ -2075,7 +2134,7 @@ def calcular_permanencia_texto(
 
 def calcular_planilla_trabajador(
     fila_emp, dias_laborados, minutos_no_laborados, minutos_extra_por_dia,
-    inp, mes_sel, anio_sel, permitir_horas_extra,
+    inp, mes_sel, anio_sel, permitir_horas_extra, regimen_laboral="GENERAL",
 ):
     """Replica la cadena de cálculo de la planilla para un trabajador en
     un período. 'inp' es el dict de datos variables del período (bonos,
@@ -2137,14 +2196,15 @@ def calcular_planilla_trabajador(
 
     gratif_auto, _bonif_auto = calcular_gratificacion(
         sueldo_basico, fecha_ingreso_txt, fecha_cese_txt, mes_sel,
-        anio_sel, regimen_salud,
+        anio_sel, regimen_salud, regimen_laboral,
     )
     cts_auto = calcular_cts(
         sueldo_basico, fecha_ingreso_txt, fecha_cese_txt, mes_sel,
-        anio_sel, asignacion_familiar_monto, regimen_salud,
+        anio_sel, asignacion_familiar_monto, regimen_salud, regimen_laboral,
     )
     vac_truncas_auto = calcular_vacaciones_truncas(
-        sueldo_basico, fecha_ingreso_txt, fecha_cese_txt, mes_sel, anio_sel
+        sueldo_basico, fecha_ingreso_txt, fecha_cese_txt, mes_sel, anio_sel,
+        regimen_laboral,
     )
 
     ingresos = {
@@ -3094,6 +3154,14 @@ def _construir_hoja_planilla(
     ws.cell(
         row=4, column=2, value=f"MES DE {MESES_NOMBRES[mes_sel].upper()} {anio_sel}"
     ).font = font_normal
+    _nombre_regimen = REGIMENES_LABORALES.get(
+        st.session_state.get("regimen_laboral", "GENERAL"),
+        REGIMENES_LABORALES["GENERAL"],
+    )["nombre"]
+    ws.cell(
+        row=5, column=2,
+        value=f"Régimen Laboral: {_nombre_regimen}",
+    ).font = Font(name="Calibri", size=9, italic=True, color="666666")
 
     # --- Grupos de columnas (fila 6), con sus colores reales y ancho
     # (número de columnas) ---
@@ -3342,6 +3410,7 @@ def _construir_hoja_planilla(
             emp, dias_laborados, min_tardanza, minutos_extra_por_dia,
             periodo_bd, mes_sel, anio_sel,
             st.session_state.permitir_horas_extra,
+            st.session_state.regimen_laboral,
         )
 
         fecha_cese_emp = emp.get("fecha_cese", "")
@@ -6936,30 +7005,68 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                     " listos para usar en tu planilla."
                 )
 
-                toggle_hextra = st.checkbox(
-                    "🕐 Esta empresa SÍ reconoce y paga horas extra",
-                    value=st.session_state.permitir_horas_extra,
-                    help=(
-                        "Si lo dejas destildado, las horas extra no se"
-                        " calculan ni se pagan en la planilla, aunque el"
-                        " trabajador se quede más tiempo marcado. Algunas"
-                        " empresas no las reconocen."
-                    ),
-                )
-                if toggle_hextra != st.session_state.permitir_horas_extra:
-                    st.session_state.permitir_horas_extra = toggle_hextra
-                    if supabase:
-                        try:
-                            guardar_configuracion_sistema(
-                                supabase,
-                                st.session_state.empresa_id,
-                                permitir_horas_extra=toggle_hextra,
-                            )
-                        except Exception as e:
-                            st.warning(
-                                f"No se pudo guardar la preferencia ({e})."
-                            )
-                    st.rerun()
+                col_toggle1, col_toggle2 = st.columns([1.3, 1])
+                with col_toggle1:
+                    toggle_hextra = st.checkbox(
+                        "🕐 Esta empresa SÍ reconoce y paga horas extra",
+                        value=st.session_state.permitir_horas_extra,
+                        help=(
+                            "Si lo dejas destildado, las horas extra no"
+                            " se calculan ni se pagan en la planilla,"
+                            " aunque el trabajador se quede más tiempo"
+                            " marcado. Algunas empresas no las"
+                            " reconocen."
+                        ),
+                    )
+                    if toggle_hextra != st.session_state.permitir_horas_extra:
+                        st.session_state.permitir_horas_extra = toggle_hextra
+                        if supabase:
+                            try:
+                                guardar_configuracion_sistema(
+                                    supabase,
+                                    st.session_state.empresa_id,
+                                    permitir_horas_extra=toggle_hextra,
+                                )
+                            except Exception as e:
+                                st.warning(
+                                    f"No se pudo guardar la preferencia ({e})."
+                                )
+                        st.rerun()
+                with col_toggle2:
+                    opciones_regimen = list(REGIMENES_LABORALES.keys())
+                    regimen_sel = st.selectbox(
+                        "📋 Régimen Laboral de esta empresa:",
+                        opciones_regimen,
+                        index=opciones_regimen.index(
+                            st.session_state.regimen_laboral
+                        )
+                        if st.session_state.regimen_laboral in opciones_regimen
+                        else 0,
+                        format_func=lambda k: REGIMENES_LABORALES[k]["nombre"],
+                        help=(
+                            "Régimen General: 30 días de vacaciones, CTS y"
+                            " gratificación completas. MYPE Microempresa:"
+                            " 15 días de vacaciones, SIN CTS ni"
+                            " gratificación. MYPE Pequeña Empresa: 15 días"
+                            " de vacaciones, CTS y gratificación a la"
+                            " mitad. Debe coincidir con tu inscripción"
+                            " real en REMYPE (Ley 28015 / D.Leg. 1086)."
+                        ),
+                    )
+                    if regimen_sel != st.session_state.regimen_laboral:
+                        st.session_state.regimen_laboral = regimen_sel
+                        if supabase:
+                            try:
+                                guardar_configuracion_sistema(
+                                    supabase,
+                                    st.session_state.empresa_id,
+                                    regimen_laboral=regimen_sel,
+                                )
+                            except Exception as e:
+                                st.warning(
+                                    f"No se pudo guardar la preferencia ({e})."
+                                )
+                        st.rerun()
 
                 with st.container(border=True):
                     col_pl1, col_pl2 = st.columns(2)
@@ -7057,6 +7164,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                             min_extra_dia_prev, periodo_bd_prev,
                             mes_planilla, anio_planilla,
                             st.session_state.permitir_horas_extra,
+                            st.session_state.regimen_laboral,
                         )
 
                         colp1, colp2, colp3, colp4 = st.columns(4)
