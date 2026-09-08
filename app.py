@@ -348,6 +348,62 @@ def render_sonido(tonos):
     components.html(html, height=0)
 
 
+def render_sonido_sello(delay_ms=200, grave=True):
+    """Sonido sintetizado de "sello golpeando papel" — un chasquido de
+    ruido corto (el "clack" del golpe) combinado con un tono grave que
+    cae rápido (el "thump" del impacto), generado 100% con Web Audio
+    API (sin archivos de audio). Mismo mecanismo seguro que
+    render_sonido(): no toca nada visual, solo reproduce sonido.
+
+    'grave' en False baja un poco el tono para diferenciar una
+    Tardanza (menos "triunfal") de un registro Puntual."""
+    frecuencia_inicial = 190 if grave else 150
+    frecuencia_final = 45 if grave else 35
+    html = f"""
+    <script>
+    (function(){{
+        setTimeout(function(){{
+            try{{
+                var ctx = new (window.AudioContext||window.webkitAudioContext)();
+
+                // El "clack" — un chasquido corto de ruido blanco.
+                var duracionRuido = 0.035;
+                var tamano = Math.floor(ctx.sampleRate * duracionRuido);
+                var buffer = ctx.createBuffer(1, tamano, ctx.sampleRate);
+                var datos = buffer.getChannelData(0);
+                for (var i = 0; i < tamano; i++) {{
+                    datos[i] = (Math.random() * 2 - 1) * (1 - i / tamano);
+                }}
+                var ruido = ctx.createBufferSource();
+                ruido.buffer = buffer;
+                var gananciaRuido = ctx.createGain();
+                gananciaRuido.gain.setValueAtTime(0.35, ctx.currentTime);
+                ruido.connect(gananciaRuido);
+                gananciaRuido.connect(ctx.destination);
+                ruido.start();
+
+                // El "thump" — un golpe grave que cae rápido de frecuencia.
+                var osc = ctx.createOscillator();
+                var g = ctx.createGain();
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime({frecuencia_inicial}, ctx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(
+                    {frecuencia_final}, ctx.currentTime + 0.15
+                );
+                g.gain.setValueAtTime(0.5, ctx.currentTime);
+                g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.28);
+                osc.connect(g);
+                g.connect(ctx.destination);
+                osc.start();
+                osc.stop(ctx.currentTime + 0.28);
+            }}catch(e){{}}
+        }}, {delay_ms});
+    }})();
+    </script>
+    """
+    components.html(html, height=0)
+
+
 def render_html(html):
     """Renderiza HTML/CSS crudo con st.markdown de forma segura.
 
@@ -486,9 +542,9 @@ def render_animacion_marcado_exitoso(logo_url, hora_texto, estado="Puntual", rac
     entre navegadores. Esta versión usa render_html() normal (el mismo
     mecanismo que el fondo animado y los meteoritos, que nunca han
     fallado) — vive dentro del árbol que Streamlit controla, así que
-    desaparece sola en el siguiente rerun. El "confetti" ahora lo pone
-    st.balloons() nativo de Streamlit (llamarlo aparte, justo después
-    de esta función, solo cuando NO sea tardanza).
+    desaparece sola en el siguiente rerun. Trae su propio sonido de
+    "golpe de sello" (render_sonido_sello) — sin confetti ni globos,
+    para que el sello sea el único protagonista de la celebración.
 
     CONECTADO A LA LÓGICA REAL de la app (esto se mantiene igual):
     - Si 'estado' es 'Tardanza', el sello sale en ámbar/naranja, con el
@@ -568,11 +624,7 @@ def render_animacion_marcado_exitoso(logo_url, hora_texto, estado="Puntual", rac
     </style>
     """
     render_html(html)
-    render_sonido([
-        (70, 0.35, 260),
-        (660 if not es_tardanza else 520, 0.08, 260),
-        (990 if not es_tardanza else 660, 0.18, 350),
-    ])
+    render_sonido_sello(delay_ms=200, grave=not es_tardanza)
 
 
 def calcular_racha_puntualidad(df_asistencia, nombre_empleado):
@@ -5857,9 +5909,11 @@ if opcion == "⏰ Marcar Asistencia":
                     )
 
                 # --- Animación de marcación exitosa: sello (100% CSS,
-                # confiable) + st.balloons() nativo como celebración,
-                # adaptada al estado real (Puntual/Tardanza) y a la
-                # racha real de puntualidad del trabajador ---
+                # confiable) con su propio sonido de "golpe de sello" —
+                # sin globos, para que el sello sea el único
+                # protagonista, adaptada al estado real
+                # (Puntual/Tardanza) y a la racha real de puntualidad
+                # del trabajador ---
                 _logo_globos = st.session_state.get(
                     "logo_globos_url", "/app/static/icon-192.png"
                 )
@@ -5871,8 +5925,6 @@ if opcion == "⏰ Marcar Asistencia":
                 render_animacion_marcado_exitoso(
                     _logo_globos, hora_str, estado=estado, racha=_racha_actual
                 )
-                if estado == "Puntual":
-                    st.balloons()
 
 elif opcion == "🔐 Panel de Gestión / Admin":
     if not st.session_state.autenticado:
