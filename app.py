@@ -314,40 +314,44 @@ def render_script(html_body, altura=0):
     importar qué tan "permisivo" sea el modo de Streamlit; es una regla
     del navegador, no de Streamlit.
 
-    st.components.v1.html() sí funciona porque carga el contenido en un
-    iframe real (como una página nueva), y ahí los scripts sí corren.
-    Como un iframe normal queda encerrado en una cajita del tamaño que
-    le des, este helper lo expande para cubrir toda la pantalla (con
-    pointer-events:none, para no bloquear clics de la página) — así los
-    overlays a pantalla completa (el sello, el anillo de verificación)
-    se ven igual que si vivieran en la página principal.
+    CÓMO FUNCIONA (rediseñado — el intento anterior de "estirar el
+    iframe para que cubra la pantalla" resultó poco confiable: en
+    algunos navegadores el sello aparecía cortado, pegado arriba, en
+    vez de centrado en toda la pantalla real). Ahora el iframe de
+    Streamlit se usa solo como un "vehículo" invisible y minúsculo para
+    poder ejecutar JavaScript — el contenido real (el HTML del sello,
+    del anillo de verificación, etc.) se inyecta DIRECTO en la página
+    PRINCIPAL (window.parent.document), no dentro del iframe. Así el
+    `position:fixed` de esos overlays funciona contra la pantalla real
+    del navegador, siempre, sin depender de que el iframe se redimensione
+    bien. El propio contenido se autodestruye (se quita del DOM) a los
+    6 segundos, para no ir acumulando elementos invisibles."""
+    import json
 
-    NOTA: solo se toca el iframe y su contenedor INMEDIATO (1 solo
-    nivel) — un intento anterior subía 4 niveles de contenedores
-    padres, y eso rompía el layout de otras partes de la página (esos
-    contenedores más arriba no son exclusivos de este iframe, también
-    envuelven contenido vecino)."""
+    html_json = json.dumps(html_body)
     html_completo = f"""
     <script>
-    if (window.frameElement) {{
-        window.frameElement.style.position = 'fixed';
-        window.frameElement.style.inset = '0';
-        window.frameElement.style.width = '100vw';
-        window.frameElement.style.height = '100vh';
-        window.frameElement.style.border = 'none';
-        window.frameElement.style.zIndex = '999999';
-        window.frameElement.style.pointerEvents = 'none';
-
-        // Solo el contenedor INMEDIATO (exclusivo de este iframe).
-        var envoltorio = window.frameElement.parentElement;
-        if (envoltorio) {{
-            envoltorio.style.height = '0px';
-            envoltorio.style.minHeight = '0px';
-            envoltorio.style.margin = '0px';
-        }}
-    }}
+    (function(){{
+        var doc = window.parent.document;
+        var contenedor = doc.createElement('div');
+        contenedor.innerHTML = {html_json};
+        doc.body.appendChild(contenedor);
+        // Los <script> insertados por innerHTML NO se ejecutan solos —
+        // hay que recrearlos a mano para que el navegador sí los corra.
+        var scriptsViejos = contenedor.querySelectorAll('script');
+        scriptsViejos.forEach(function(viejo){{
+            var nuevo = doc.createElement('script');
+            if (viejo.src) {{ nuevo.src = viejo.src; }}
+            else {{ nuevo.textContent = viejo.textContent; }}
+            doc.body.appendChild(nuevo);
+        }});
+        setTimeout(function(){{
+            if (contenedor.parentNode) {{
+                contenedor.parentNode.removeChild(contenedor);
+            }}
+        }}, 6000);
+    }})();
     </script>
-    {html_body}
     """
     components.html(html_completo, height=altura)
 
@@ -789,7 +793,7 @@ if not ES_CELULAR:
         """
         <script>
         (function() {
-            var doc = window.parent.document;
+            var doc = document;
             if (doc._facEnterListo) { return; }
             doc._facEnterListo = true;
             // FASE DE CAPTURA (el 'true' final): Streamlit tiene su
