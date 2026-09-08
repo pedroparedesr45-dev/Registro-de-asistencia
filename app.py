@@ -1409,7 +1409,14 @@ def eliminar_empresa_supabase(supabase, empresa_id):
     ).execute()
 
 
+@st.cache_data(ttl=5)
 def cargar_empresas():
+    # OPTIMIZACIÓN: cacheado 5 segundos. La lista de empresas casi no
+    # cambia de un momento a otro, así que evita pedirle esto a
+    # Supabase en cada actualización de pantalla (foto, GPS, auto-
+    # refresco) — 5 segundos es corto a propósito, para que si el
+    # developer acaba de crear una empresa nueva, la vea reflejada casi
+    # de inmediato en vez de tener que esperar mucho.
     registros_empresas = cargar_empresas_supabase(supabase)
     columnas_empresas = [
         "empresa_id",
@@ -1659,16 +1666,25 @@ def enviar_backup_email(asunto, cuerpo, adjuntos):
         server.send_message(msg)
 
 
-def cargar_configuracion_sistema(supabase, empresa_id):
+@st.cache_data(ttl=30)
+def cargar_configuracion_sistema(_supabase, empresa_id):
     """Carga PINs, clave de Excel y contraseña por defecto desde Supabase
     para esta empresa (tabla configuracion_sistema). Si no hay fila
     guardada todavía, deja los valores que ya estaban en session_state
-    (los de Secrets o los de respaldo)."""
-    if not supabase:
+    (los de Secrets o los de respaldo).
+
+    OPTIMIZACIÓN: cacheado 30 segundos — esto casi no cambia de un
+    momento a otro (PINs, régimen laboral, logo), así que no hace falta
+    volver a pedirlo a Supabase en cada actualización de pantalla. El
+    parámetro se llama '_supabase' (con guion bajo) a propósito: así le
+    decimos a Streamlit que NO intente cachear basándose en ese objeto
+    (los clientes de Supabase no se pueden "hashear" de forma
+    confiable) — solo cachea según el empresa_id."""
+    if not _supabase:
         return
     try:
         res = (
-            supabase.table("configuracion_sistema")
+            _supabase.table("configuracion_sistema")
             .select("*")
             .eq("empresa_id", str(empresa_id))
             .limit(1)
@@ -3279,7 +3295,15 @@ def procesar_carga_masiva_sedes(supabase, archivo_excel):
     return resultado
 
 
+@st.cache_data(ttl=5)
 def cargar_datos(empresa_id):
+    # OPTIMIZACIÓN: cacheado 5 segundos. Esta función trae sedes,
+    # empleados Y sincroniza las marcaciones nuevas desde la Nube — es
+    # la que más pesa de toda la app, y sin caché se repetía en cada
+    # actualización de pantalla (foto, GPS, auto-refresco), lo cual
+    # hacía sentir lenta la pantalla de Marcar Asistencia. 5 segundos
+    # es corto a propósito para no perder la sensación de "casi en
+    # tiempo real" que ya tenía el sistema.
     cargar_empresas()
 
     registros_sedes = cargar_sedes_supabase(supabase, empresa_id)
