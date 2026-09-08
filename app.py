@@ -1806,28 +1806,204 @@ def eliminar_empleado_supabase(supabase, empresa_id, dni):
     )
 
 
+def generar_plantilla_datos_maestros_planilla(df_empleados):
+    """Genera un Excel con TODOS los trabajadores actuales (DNI +
+    nombre de referencia ya prellenados) y las columnas de Datos
+    Maestros de Planilla, con un comentario en cada encabezado
+    explicando qué va ahí — para llenar de una sola vez en vez de
+    trabajador por trabajador."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Datos Maestros de Planilla"
+
+    columnas = [
+        ("dni", "DNI del trabajador — NO LO CAMBIES, así se identifica"
+         " a quién actualizar. Ya viene prellenado con tus"
+         " trabajadores actuales."),
+        ("nombre_referencia", "Solo para que sepas de quién es cada"
+         " fila — esta columna es de referencia, no se guarda."),
+        ("apellido_paterno", "Tal como figura en su DNI."),
+        ("apellido_materno", "Tal como figura en su DNI."),
+        ("nombres", "Solo los nombres, sin apellidos."),
+        ("genero", "FEMENINO o MASCULINO."),
+        ("fecha_nacimiento", "Formato DD/MM/AAAA (ej. 15/03/1990). Se"
+         " usa para calcular su edad en el reporte de planilla."),
+        ("cta_bancaria", "Número de cuenta interbancario (CCI) donde"
+         " se le deposita el sueldo."),
+        ("banco", "BBVA, BCP, INTERBANK, SCOTIABANK, BCO NACION o CM"
+         " PIURA."),
+        ("correo_electronico", "Opcional, solo para tus registros."),
+        ("tipo_contrato", "A TIEMPO PARCIAL, A PLAZO INDETERMINADO,"
+         " INCREMENTO DE ACTIV, NECESIDAD DE MERCAD, o SERVICIO"
+         " ESPECIFICO O DET."),
+        ("modalidad", "PRESENCIAL, REMOTO o MIXTO."),
+        ("sueldo_basico", "El sueldo mensual pactado, en soles, SIN"
+         " bonos ni horas extra (ej. 1500) — es la base de casi todos"
+         " los cálculos de la planilla."),
+        ("tipo_aportacion", "AFP o ONP."),
+        ("afp_tipo", "Solo si 'tipo_aportacion' es AFP: HABITAT FLUJO,"
+         " HABITAT MIXTA, INTEGRA FLUJO, INTEGRA MIXTA, PRIMA FLUJO,"
+         " PRIMA MIXTA, PROFUTURO FLUJO o PROFUTURO MIXTA."),
+        ("cuspp", "Código único de afiliación a su AFP — lo tiene en"
+         " su boleta anterior. Se usa para el reporte AFPnet."),
+        ("exclusion_afp", "Dejar en blanco si aporta normal. Si tiene"
+         " una excepción: JUBILACION, INVALIDEZ, LICENCIA SIN GOCE,"
+         " SUBSIDIO ESSALUD, APORTES POSTERGADOS u OTROS MOTIVOS."),
+        ("regimen_salud", "ESSALUD o EPS — cambia el % de la"
+         " bonificación extraordinaria de la gratificación (9% vs"
+         " 6.75%)."),
+        ("asignacion_familiar", "SI o NO — si tiene hijos y le"
+         " corresponde la asignación familiar."),
+        ("fecha_cese", "Dejar en blanco si sigue activo. Si ya no"
+         " trabaja ahí: la fecha en formato DD/MM/AAAA — esto activa"
+         " sola la liquidación (gratificación, CTS y vacaciones"
+         " truncas)."),
+        ("fecha_fin_contrato", "Solo si su contrato es a plazo fijo —"
+         " la fecha en que vence, formato DD/MM/AAAA. Es informativo,"
+         " no dispara ningún cálculo."),
+        ("motivo_baja", "Solo si tiene Fecha de Cese: TERMINO DE"
+         " CONTRATO, RENUNCIA, DESPIDO, MUTUO DISENSO o"
+         " FALLECIMIENTO."),
+    ]
+    for idx, (nombre, comentario) in enumerate(columnas, start=1):
+        celda = ws.cell(row=1, column=idx, value=nombre)
+        celda.font = Font(bold=True, color="FFFFFF")
+        celda.fill = PatternFill(
+            start_color="6C3483", end_color="6C3483", fill_type="solid"
+        )
+        celda.comment = Comment(comentario, "Sistema de Planilla")
+
+    r = 2
+    if df_empleados is not None and not df_empleados.empty:
+        for _, emp in df_empleados.sort_values("nombre").iterrows():
+            ws.cell(row=r, column=1, value=str(emp["dni"]))
+            ws.cell(row=r, column=2, value=emp["nombre"])
+            r += 1
+    else:
+        ws.cell(row=r, column=1, value="75227702 (ejemplo, bórrame)")
+        ws.cell(row=r, column=2, value="NOMBRE APELLIDO")
+
+    ws.column_dimensions["A"].width = 14
+    ws.column_dimensions["B"].width = 28
+    for col_idx in range(3, len(columnas) + 1):
+        ws.column_dimensions[get_column_letter(col_idx)].width = 20
+    ws.freeze_panes = "C2"
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    return buffer.getvalue()
+
+
+def procesar_carga_masiva_datos_maestros(supabase, archivo_excel, empresa_id):
+    """Lee el Excel de Datos Maestros de Planilla subido por el admin y
+    actualiza (upsert PARCIAL, solo los campos con dato) cada
+    trabajador ya existente, identificado por DNI. Devuelve un resumen
+    con cuántos se actualizaron y los errores fila por fila."""
+    resultado = {"actualizados": 0, "errores": []}
+    try:
+        df_subido = pd.read_excel(archivo_excel)
+    except Exception as e:
+        resultado["errores"].append(f"No se pudo leer el Excel: {e}")
+        return resultado
+
+    df_subido.columns = [str(c).strip().lower() for c in df_subido.columns]
+    if "dni" not in df_subido.columns:
+        resultado["errores"].append(
+            "Falta la columna 'dni'. Usa la plantilla de ejemplo sin"
+            " cambiarle los encabezados."
+        )
+        return resultado
+
+    campos_texto_mayuscula = [
+        "apellido_paterno", "apellido_materno", "nombres", "genero",
+        "banco", "tipo_contrato", "modalidad", "tipo_aportacion",
+        "afp_tipo", "exclusion_afp", "regimen_salud", "motivo_baja",
+    ]
+    campos_texto_tal_cual = [
+        "fecha_nacimiento", "cta_bancaria", "correo_electronico",
+        "cuspp", "fecha_cese", "fecha_fin_contrato",
+    ]
+
+    for i, fila in df_subido.iterrows():
+        num_fila_excel = i + 2  # +2: encabezado + índice 0-based
+        try:
+            dni = str(fila.get("dni", "")).strip()
+            if not dni or dni.lower() == "nan" or "ejemplo" in dni.lower():
+                continue  # fila vacía o la fila de ejemplo: se ignora
+
+            datos_dp = {"empresa_id": str(empresa_id), "dni": dni}
+
+            for campo in campos_texto_mayuscula:
+                if campo in df_subido.columns:
+                    valor = fila.get(campo, "")
+                    valor = "" if pd.isna(valor) else str(valor).strip().upper()
+                    if valor and valor != "NAN":
+                        datos_dp[campo] = valor
+
+            for campo in campos_texto_tal_cual:
+                if campo in df_subido.columns:
+                    valor = fila.get(campo, "")
+                    valor = "" if pd.isna(valor) else str(valor).strip()
+                    if valor and valor.lower() != "nan":
+                        datos_dp[campo] = valor
+
+            if "sueldo_basico" in df_subido.columns:
+                sueldo = fila.get("sueldo_basico", None)
+                if pd.notna(sueldo):
+                    try:
+                        datos_dp["sueldo_basico"] = float(sueldo)
+                    except (TypeError, ValueError):
+                        pass
+
+            if "asignacion_familiar" in df_subido.columns:
+                valor_af = str(fila.get("asignacion_familiar", "")).strip().upper()
+                if valor_af in ("SI", "SÍ", "YES", "1", "TRUE"):
+                    datos_dp["asignacion_familiar"] = True
+                elif valor_af in ("NO", "0", "FALSE"):
+                    datos_dp["asignacion_familiar"] = False
+
+            if len(datos_dp) <= 2:
+                continue  # solo tenía empresa_id + dni, nada que actualizar
+
+            if supabase:
+                guardar_empleado_supabase(supabase, datos_dp)
+            resultado["actualizados"] += 1
+        except Exception as e:
+            resultado["errores"].append(f"Fila {num_fila_excel}: {e}")
+
+    return resultado
+
+
 def generar_plantilla_empleados(df_sedes):
-    """Genera un Excel de ejemplo (solo encabezados + una fila guía)
-    para que el admin la llene y la vuelva a subir en la carga masiva
-    de trabajadores. Incluye, como referencia, la lista de sedes ya
-    registradas en una segunda hoja."""
+    """Genera un Excel de ejemplo (encabezados con comentarios + una
+    fila guía) para que el admin la llene y la vuelva a subir en la
+    carga masiva de trabajadores. Incluye, como referencia, la lista de
+    sedes ya registradas en una segunda hoja."""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Trabajadores"
 
     columnas = [
-        "dni",
-        "nombre",
-        "sede_principal",
-        "cargo",
-        "password",
+        ("dni", "DNI del trabajador, 8 dígitos, sin puntos ni espacios."
+         " Es su usuario para iniciar sesión y marcar asistencia."),
+        ("nombre", "Nombre completo del trabajador, tal cual aparece en"
+         " su DNI (ej. JULIO PEREZ RAMOS)."),
+        ("sede_principal", "El nombre EXACTO de una de tus sedes ya"
+         " registradas (revisa la segunda hoja de este archivo,"
+         " 'Sedes disponibles')."),
+        ("cargo", "Su puesto o cargo (ej. VENDEDOR, CONTADOR,"
+         " ADMINISTRADOR)."),
+        ("password", "Su contraseña para marcar asistencia. Si lo"
+         " dejas en blanco, se le asigna la contraseña por defecto del"
+         " sistema automáticamente."),
     ]
-    ws.append(columnas)
-    for celda in ws[1]:
+    for idx, (nombre, comentario) in enumerate(columnas, start=1):
+        celda = ws.cell(row=1, column=idx, value=nombre)
         celda.font = Font(bold=True, color="FFFFFF")
         celda.fill = PatternFill(
             start_color="1F4E79", end_color="1F4E79", fill_type="solid"
         )
+        celda.comment = Comment(comentario, "Sistema de Asistencia")
 
     sede_ejemplo = (
         df_sedes["nombre_sede"].iloc[0]
@@ -3214,27 +3390,38 @@ def calcular_planilla_trabajador(
 
 
 def generar_plantilla_sedes():
-    """Genera un Excel de ejemplo (solo encabezados + una fila guía)
-    para que el admin la llene y la vuelva a subir en la carga masiva
-    de sedes."""
+    """Genera un Excel de ejemplo (encabezados con comentarios + una
+    fila guía) para que el admin la llene y la vuelva a subir en la
+    carga masiva de sedes."""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Sedes"
 
     columnas = [
-        "nombre_sede",
-        "latitud",
-        "longitud",
-        "hora_entrada",
-        "hora_salida",
-        "rango_metros",
+        ("nombre_sede", "Nombre de la sede, tal cual quieres que"
+         " aparezca en el sistema (ej. OFICINA PRINCIPAL, ALMACÉN"
+         " NORTE). No puede repetirse."),
+        ("latitud", "Coordenada GPS de latitud del punto exacto de la"
+         " sede (ej. -8.098100). La sacas de Google Maps: clic derecho"
+         " en el punto → copiar las coordenadas, el primer número."),
+        ("longitud", "Coordenada GPS de longitud del mismo punto (ej."
+         " -79.044800) — el segundo número que copiaste de Google"
+         " Maps."),
+        ("hora_entrada", "Hora oficial de entrada en esa sede, formato"
+         " HH:MM:SS (ej. 08:00:00)."),
+        ("hora_salida", "Hora oficial de salida en esa sede, formato"
+         " HH:MM:SS (ej. 17:00:00)."),
+        ("rango_metros", "Radio en metros alrededor del punto GPS"
+         " donde se permite marcar (ej. 100). Si el trabajador está"
+         " más lejos que esto, no lo deja marcar."),
     ]
-    ws.append(columnas)
-    for celda in ws[1]:
+    for idx, (nombre, comentario) in enumerate(columnas, start=1):
+        celda = ws.cell(row=1, column=idx, value=nombre)
         celda.font = Font(bold=True, color="FFFFFF")
         celda.fill = PatternFill(
             start_color="1F4E79", end_color="1F4E79", fill_type="solid"
         )
+        celda.comment = Comment(comentario, "Sistema de Asistencia")
 
     ws.append([
         "OFICINA PRINCIPAL (ejemplo, bórrame)",
@@ -4134,7 +4321,12 @@ def _construir_hoja_planilla(
         (
             "APELLIDOS Y NOMBRES",
             "= Apellido Paterno + Apellido Materno + Nombres, combinados"
-            " en un solo campo (para referencia rápida).",
+            " en ese orden. Si esos 3 campos están vacíos (nunca se"
+            " llenaron en Datos Maestros), usa el Nombre Completo"
+            " general en el orden que se haya escrito al crear al"
+            " trabajador — para que siempre coincida con el"
+            " encabezado, llena los 3 campos separados en Datos"
+            " Maestros de Planilla.",
         ),
         ("GÉNERO", None),
         ("FECHA DE NACIMIENTO", None),
@@ -4320,8 +4512,9 @@ def _construir_hoja_planilla(
         ("TOTAL APORTES", "= SCTR + ESSALUD + Seguro de Vida Ley."),
         (
             "COSTO PLANILLA",
-            "= Total Rem. Bruta − (Total Descuentos + Adelantos) +"
-            " Total Aportes.",
+            "= Total Aportes + Neto a Pagar + Adelantos + Total"
+            " Retenciones. Es el costo real para la empresa — un"
+            " adelanto no lo cambia, solo adelanta cuándo se paga.",
         ),
     ]
     for idx, (nombre_col, explicacion) in enumerate(columnas, start=1):
@@ -4393,11 +4586,25 @@ def _construir_hoja_planilla(
         )
 
         fecha_cese_emp = emp.get("fecha_cese", "")
+        # "APELLIDOS Y NOMBRES" se arma desde los campos separados
+        # (orden garantizado: Apellido Paterno, Apellido Materno,
+        # Nombres) — así el contenido siempre coincide con lo que dice
+        # el encabezado. Solo si esos 3 campos están vacíos (nunca se
+        # llenaron en Datos Maestros) se usa el nombre general como
+        # respaldo, que puede estar en cualquier orden según cómo lo
+        # haya escrito cada admin al crear al trabajador.
+        _partes_nombre = [
+            emp.get("apellido_paterno", ""), emp.get("apellido_materno", ""),
+            emp.get("nombres", ""),
+        ]
+        _apellidos_y_nombres = " ".join(p for p in _partes_nombre if p).strip()
+        if not _apellidos_y_nombres:
+            _apellidos_y_nombres = emp["nombre"]
         valores = [
             n_fila, dni,
             emp.get("apellido_paterno", ""), emp.get("apellido_materno", ""),
-            emp.get("nombres", "") or emp["nombre"],
-            emp["nombre"],
+            emp.get("nombres", ""),
+            _apellidos_y_nombres,
             emp.get("genero", ""), emp.get("fecha_nacimiento", ""),
             calcular_edad(emp.get("fecha_nacimiento", "")),
             emp.get("cta_bancaria", ""), emp.get("banco", ""),
@@ -4465,9 +4672,27 @@ def _construir_hoja_planilla(
 
     # Ocultar (no borrar) las columnas numéricas donde TODOS los
     # trabajadores dieron 0 — para que la planilla se vea más limpia
-    # sin perder el dato por si se necesita después.
-    columnas_no_ocultables = set(range(1, 23))  # datos de identificación/
-    # contrato: nunca se ocultan aunque den 0 (N° a PERMANENCIA)
+    # sin perder el dato por si se necesita después. Se identifica por
+    # NOMBRE de columna (no por número), para que quede a prueba de
+    # futuros cambios de orden.
+    columnas_no_ocultables_nombres = {
+        "N°", "DNI/C. EXT.", "APELLIDO PATERNO", "APELLIDO MATERNO",
+        "NOMBRES", "APELLIDOS Y NOMBRES", "GÉNERO", "FECHA DE NACIMIENTO",
+        "EDAD", "CTA CTE - BANCOS", "ENTIDAD FINANCIERA",
+        "CORREO ELECTRÓNICO", "TIPO DE CONTRATO", "MODALIDAD",
+        "CARGO U OCUPACIÓN", "SUELDO BÁSICO", "FECHA DE INGRESO",
+        "FECHA DE CESE/TÉRMINO", "FECHA FIN DE CONTRATO", "MOTIVO DE BAJA",
+        "CONDICIÓN", "PERMANENCIA",
+        # Estas 2 quedan siempre visibles aunque den 0 en todos — son
+        # campos financieros importantes que conviene poder verificar
+        # de un vistazo, no solo cuando alguien los usa.
+        "ADELANTOS", "SEGURO VIDA LEY",
+    }
+    columnas_no_ocultables = {
+        idx
+        for idx, (nombre_col, _) in enumerate(columnas, start=1)
+        if nombre_col in columnas_no_ocultables_nombres
+    }
     for col_idx in range(1, n_columnas + 1):
         if col_idx in columnas_no_ocultables or r <= 8:
             continue
@@ -8300,6 +8525,70 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                         " cambie (aumento de sueldo, cambio de AFP, etc.)."
                     )
 
+                    with st.container(border=True):
+                        st.markdown(
+                            "##### 📤 Carga masiva (todos los"
+                            " trabajadores de una vez)"
+                        )
+                        st.caption(
+                            "Descarga la plantilla (ya viene con todos"
+                            " tus trabajadores y comentarios en cada"
+                            " encabezado explicando qué va ahí), llénala"
+                            " y súbela — actualiza solo los campos que"
+                            " tengan dato, no borra nada de lo que ya"
+                            " tenías."
+                        )
+                        col_dm1, col_dm2 = st.columns(2)
+                        with col_dm1:
+                            st.download_button(
+                                "⬇️ Descargar plantilla",
+                                data=generar_plantilla_datos_maestros_planilla(
+                                    df_empleados
+                                ),
+                                file_name="plantilla_datos_maestros_planilla.xlsx",
+                                mime=(
+                                    "application/vnd.openxmlformats"
+                                    "-officedocument.spreadsheetml.sheet"
+                                ),
+                                use_container_width=True,
+                            )
+                        archivo_dm_masivo = st.file_uploader(
+                            "Subir plantilla llena:", type=["xlsx"],
+                            key="uploader_datos_maestros_masivo",
+                        )
+                        if archivo_dm_masivo is not None:
+                            if st.button(
+                                "📥 Procesar e Importar Datos Maestros",
+                                type="primary",
+                                use_container_width=True,
+                            ):
+                                with st.spinner("Procesando el archivo..."):
+                                    resultado_dm = (
+                                        procesar_carga_masiva_datos_maestros(
+                                            supabase, archivo_dm_masivo,
+                                            st.session_state.empresa_id,
+                                        )
+                                    )
+                                if resultado_dm["errores"]:
+                                    with st.expander(
+                                        f"⚠️ {len(resultado_dm['errores'])}"
+                                        " fila(s) con problemas (clic para"
+                                        " ver detalle)"
+                                    ):
+                                        for err in resultado_dm["errores"]:
+                                            st.write(f"- {err}")
+                                if resultado_dm["actualizados"]:
+                                    st.success(
+                                        f"✅ {resultado_dm['actualizados']}"
+                                        " trabajador(es) actualizados."
+                                    )
+                                    st.rerun()
+                                elif not resultado_dm["errores"]:
+                                    st.info(
+                                        "No se encontraron filas con datos"
+                                        " para actualizar."
+                                    )
+
                     if df_empleados.empty:
                         st.info("Todavía no hay trabajadores registrados.")
                     else:
@@ -9411,6 +9700,15 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 )
 
                     st.divider()
+                    st.info(
+                        "📌 **Orden de importación en PLAME**: primero"
+                        " importa el archivo **`.ps4`** (registra a los"
+                        " prestadores), y **recién después** el"
+                        " **`.4ta`** (el detalle de sus recibos) — si"
+                        " los importas en el orden contrario, PLAME"
+                        " puede rechazar el `.4ta` porque todavía no"
+                        " reconoce a esos prestadores."
+                    )
                     if st.button(
                         "📋 Generar Carga Masiva a PLAME (.ps4 + .4ta)",
                         help=(
@@ -9419,6 +9717,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                             " separados por '|', con el nombre exacto que"
                             " exige el sistema), listos para 'Importar"
                             " archivo' en la pestaña PS 4ta Categoría."
+                            " Importa primero el .ps4, luego el .4ta."
                         ),
                     ):
                         st.info(
@@ -9452,6 +9751,8 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                             )
                             st.caption(
                                 f"Archivos: `{nombre_ps4}` y `{nombre_4ta}`"
+                                " — importa primero el `.ps4`, después"
+                                " el `.4ta`."
                             )
                             st.download_button(
                                 "💾 Descargar carpeta (.zip con ambos"
@@ -9466,7 +9767,8 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                             )
                             st.caption(
                                 "Descomprime el .zip en una carpeta — los"
-                                " 2 archivos (.PS0 y .4TA) deben quedar"
-                                " juntos ahí para que PLAME los pueda"
-                                " importar."
+                                " 2 archivos (.ps4 y .4ta) deben quedar"
+                                " juntos ahí. Recuerda: primero importa"
+                                " el .ps4 en PLAME, y solo después el"
+                                " .4ta."
                             )
