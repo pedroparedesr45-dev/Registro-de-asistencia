@@ -306,7 +306,7 @@ def clave_coincide(valor_ingresado, valor_guardado):
     return str(valor_ingresado) == valor_guardado
 
 
-def render_script(html_body, altura=0):
+def render_script(html_body, altura=0, limpieza_ms=2500):
     """Renderiza HTML que incluye un <script> REAL que necesita
     ejecutarse en el navegador (sonido, confetti, temblor de pantalla,
     etc.). NUNCA usar render_html()/st.markdown() para esto — los
@@ -314,18 +314,22 @@ def render_script(html_body, altura=0):
     importar qué tan "permisivo" sea el modo de Streamlit; es una regla
     del navegador, no de Streamlit.
 
-    CÓMO FUNCIONA (rediseñado — el intento anterior de "estirar el
-    iframe para que cubra la pantalla" resultó poco confiable: en
-    algunos navegadores el sello aparecía cortado, pegado arriba, en
-    vez de centrado en toda la pantalla real). Ahora el iframe de
-    Streamlit se usa solo como un "vehículo" invisible y minúsculo para
-    poder ejecutar JavaScript — el contenido real (el HTML del sello,
-    del anillo de verificación, etc.) se inyecta DIRECTO en la página
-    PRINCIPAL (window.parent.document), no dentro del iframe. Así el
-    `position:fixed` de esos overlays funciona contra la pantalla real
-    del navegador, siempre, sin depender de que el iframe se redimensione
-    bien. El propio contenido se autodestruye (se quita del DOM) a los
-    6 segundos, para no ir acumulando elementos invisibles."""
+    CÓMO FUNCIONA: el iframe de Streamlit se usa solo como un
+    "vehículo" invisible para poder ejecutar JavaScript — el contenido
+    real se inyecta DIRECTO en la página principal
+    (window.parent.document), no dentro del iframe. Así el
+    `position:fixed` de los overlays funciona contra la pantalla real.
+
+    IMPORTANTE (bug real ya corregido, "se quedaba pegado en pantalla"):
+    Streamlit NO recarga la página del navegador en cada rerun — es una
+    app de una sola página, el DOM del navegador sigue vivo entre
+    reruns. Lo que se inyecta aquí queda FUERA del árbol que Streamlit
+    controla, así que si el 'limpieza_ms' es más largo que el tiempo
+    que Python espera antes de hacer st.rerun(), el overlay se queda
+    visible tapando la pantalla siguiente. Por eso cada animación debe
+    pasar su propia duración real (no un valor genérico), y además se
+    quita cualquier overlay anterior con la misma etiqueta ANTES de
+    poner uno nuevo, por si dos quedaron superpuestos."""
     import json
 
     html_json = json.dumps(html_body)
@@ -335,17 +339,22 @@ def render_script(html_body, altura=0):
     # ahí — el parser de HTML busca la secuencia "</script>" a lo bruto,
     # sin importarle que esté metida dentro de un string de JS. Todo lo
     # que seguía después quedaba como texto suelto, visible en la
-    # página (y los <div> de limpieza nunca llegaban a insertarse bien,
-    # dejando overlays a medio armar interfiriendo con el scroll). Se
-    # arregla partiendo la secuencia "</script>" con una barra invertida
-    # (que en JS no cambia el string real, pero rompe la coincidencia
-    # para el parser de HTML).
+    # página. Se arregla partiendo la secuencia "</script>" con una
+    # barra invertida (que en JS no cambia el string real, pero rompe
+    # la coincidencia para el parser de HTML).
     html_json = html_json.replace("</script>", "<\\/script>")
     html_completo = f"""
     <script>
     (function(){{
         var doc = window.parent.document;
+        // Por seguridad, quita cualquier overlay anterior nuestro que
+        // se haya quedado pegado (de un rerun anterior demasiado
+        // rápido) antes de poner el nuevo.
+        var viejos = doc.querySelectorAll('.fac-overlay-animacion');
+        viejos.forEach(function(v){{ if (v.parentNode) v.parentNode.removeChild(v); }});
+
         var contenedor = doc.createElement('div');
+        contenedor.className = 'fac-overlay-animacion';
         contenedor.innerHTML = {html_json};
         doc.body.appendChild(contenedor);
         // Los <script> insertados por innerHTML NO se ejecutan solos —
@@ -361,7 +370,7 @@ def render_script(html_body, altura=0):
             if (contenedor.parentNode) {{
                 contenedor.parentNode.removeChild(contenedor);
             }}
-        }}, 6000);
+        }}, {limpieza_ms});
     }})();
     </script>
     """
@@ -497,7 +506,7 @@ def render_animacion_verificando(logo_url):
     }})();
     </script>
     """
-    render_script(html)
+    render_script(html, limpieza_ms=1400)
 
 
 def render_animacion_marcado_exitoso(logo_url, hora_texto, estado="Puntual", racha=0):
@@ -647,7 +656,7 @@ def render_animacion_marcado_exitoso(logo_url, hora_texto, estado="Puntual", rac
     }})();
     </script>
     """
-    render_script(html)
+    render_script(html, limpieza_ms=2700)
 
 
 def calcular_racha_puntualidad(df_asistencia, nombre_empleado):
@@ -858,7 +867,8 @@ if not ES_CELULAR:
             }, true);
         })();
         </script>
-        """
+        """,
+        limpieza_ms=1000,
     )
 
 # VISTA_TRABAJADOR_MOVIL: además de ser celular, la persona todavía no
@@ -3826,6 +3836,13 @@ df_empresas = cargar_empresas()
 df_sedes, df_empleados, df_asistencia = cargar_datos(
     st.session_state.empresa_id
 )
+
+# Trae la configuración general (logo de las animaciones, horas extra,
+# régimen laboral) para TODOS los flujos — antes solo se cargaba para
+# Admin/Developer, así que un trabajador que solo entraba a marcar
+# nunca veía el logo configurado (siempre caía al ícono por defecto).
+if supabase and st.session_state.empresa_id:
+    cargar_configuracion_sistema(supabase, st.session_state.empresa_id)
 
 # Sincroniza el interruptor global de "Mejoras en Producción" con lo que
 # haya guardado en Supabase, para que sea el mismo estado en todas las
