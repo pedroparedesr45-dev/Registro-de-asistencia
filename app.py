@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 from supabase import create_client, Client
 import base64
 import calendar
@@ -305,6 +306,38 @@ def clave_coincide(valor_ingresado, valor_guardado):
     return str(valor_ingresado) == valor_guardado
 
 
+def render_script(html_body, altura=1):
+    """Renderiza HTML que incluye un <script> REAL que necesita
+    ejecutarse en el navegador (sonido, confetti, temblor de pantalla,
+    etc.). NUNCA usar render_html()/st.markdown() para esto — los
+    navegadores no ejecutan <script> insertado por innerHTML, sin
+    importar qué tan "permisivo" sea el modo de Streamlit; es una regla
+    del navegador, no de Streamlit.
+
+    st.components.v1.html() sí funciona porque carga el contenido en un
+    iframe real (como una página nueva), y ahí los scripts sí corren.
+    Como un iframe normal queda encerrado en una cajita del tamaño que
+    le des, este helper lo expande para cubrir toda la pantalla (con
+    pointer-events:none, para no bloquear clics de la página) — así los
+    overlays a pantalla completa (el sello, el anillo de verificación)
+    se ven igual que si vivieran en la página principal."""
+    html_completo = f"""
+    <script>
+    if (window.frameElement) {{
+        window.frameElement.style.position = 'fixed';
+        window.frameElement.style.inset = '0';
+        window.frameElement.style.width = '100vw';
+        window.frameElement.style.height = '100vh';
+        window.frameElement.style.border = 'none';
+        window.frameElement.style.zIndex = '999999';
+        window.frameElement.style.pointerEvents = 'none';
+    }}
+    </script>
+    {html_body}
+    """
+    components.html(html_completo, height=altura)
+
+
 def render_html(html):
     """Renderiza HTML/CSS crudo con st.markdown de forma segura.
 
@@ -434,7 +467,7 @@ def render_animacion_verificando(logo_url):
     }})();
     </script>
     """
-    render_html(html)
+    render_script(html)
 
 
 def render_animacion_marcado_exitoso(logo_url, hora_texto, estado="Puntual", racha=0):
@@ -584,7 +617,7 @@ def render_animacion_marcado_exitoso(logo_url, hora_texto, estado="Puntual", rac
     }})();
     </script>
     """
-    render_html(html)
+    render_script(html)
 
 
 def calcular_racha_puntualidad(df_asistencia, nombre_empleado):
@@ -738,12 +771,13 @@ ES_CELULAR = MODO_MOVIL or (
 # no hace falta usar el mouse para confirmar. En celular se deja igual
 # que siempre (no se inyecta nada).
 if not ES_CELULAR:
-    render_html(
+    render_script(
         """
         <script>
         (function() {
-            if (window._facEnterListo) { return; }
-            window._facEnterListo = true;
+            var doc = window.parent.document;
+            if (doc._facEnterListo) { return; }
+            doc._facEnterListo = true;
             // FASE DE CAPTURA (el 'true' final): Streamlit tiene su
             // propio manejador de Enter en cada campo, que dispara su
             // propio "recargar la página" antes de que nuestro clic
@@ -752,9 +786,9 @@ if not ES_CELULAR:
             // fase de captura interceptamos el Enter ANTES que
             // Streamlit, evitamos su recarga con stopPropagation, y
             // hacemos nosotros mismos el clic en el botón.
-            document.addEventListener('keydown', function(e) {
+            doc.addEventListener('keydown', function(e) {
                 if (e.key !== 'Enter') { return; }
-                const activo = document.activeElement;
+                const activo = doc.activeElement;
                 if (!activo || activo.tagName !== 'INPUT') { return; }
                 if (activo.type !== 'password') { return; }
                 let el = activo.closest('[data-testid="stVerticalBlock"]');
