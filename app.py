@@ -4683,10 +4683,6 @@ def _construir_hoja_planilla(
         "CARGO U OCUPACIÓN", "SUELDO BÁSICO", "FECHA DE INGRESO",
         "FECHA DE CESE/TÉRMINO", "FECHA FIN DE CONTRATO", "MOTIVO DE BAJA",
         "CONDICIÓN", "PERMANENCIA",
-        # Estas 2 quedan siempre visibles aunque den 0 en todos — son
-        # campos financieros importantes que conviene poder verificar
-        # de un vistazo, no solo cuando alguien los usa.
-        "ADELANTOS", "SEGURO VIDA LEY",
     }
     columnas_no_ocultables = {
         idx
@@ -8639,15 +8635,18 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 "Apellido Paterno:",
                                 value=_val_dp("apellido_paterno"),
                                 help="Tal como figura en su DNI.",
+                                key=f"dp_ap_pat_{fila_dp['dni']}",
                             )
                             dp_ap_mat = st.text_input(
                                 "Apellido Materno:",
                                 value=_val_dp("apellido_materno"),
                                 help="Tal como figura en su DNI.",
+                                key=f"dp_ap_mat_{fila_dp['dni']}",
                             )
                             dp_nombres = st.text_input(
                                 "Nombres:", value=_val_dp("nombres"),
                                 help="Solo los nombres, sin apellidos.",
+                                key=f"dp_nombres_{fila_dp['dni']}",
                             )
                             dp_genero = st.selectbox(
                                 "Género:",
@@ -8657,6 +8656,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     _val_dp("genero"),
                                 ),
                                 help="Se usa para los reportes de planilla.",
+                                key=f"dp_genero_{fila_dp['dni']}",
                             )
                         with col_dp2:
                             dp_f_nac = st.text_input(
@@ -8667,6 +8667,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     " la edad del trabajador en el"
                                     " reporte de planilla."
                                 ),
+                                key=f"dp_f_nac_{fila_dp['dni']}",
                             )
                             dp_cta = st.text_input(
                                 "Cuenta Bancaria (CCI):",
@@ -8675,17 +8676,20 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     "Número de cuenta interbancario (CCI)"
                                     " donde se le deposita el sueldo."
                                 ),
+                                key=f"dp_cta_{fila_dp['dni']}",
                             )
                             dp_banco = st.selectbox(
                                 "Banco:",
                                 BANCOS_LISTA,
                                 index=_idx(BANCOS_LISTA, _val_dp("banco")),
                                 help="El banco donde tiene su cuenta de sueldo.",
+                                key=f"dp_banco_{fila_dp['dni']}",
                             )
                             dp_correo = st.text_input(
                                 "Correo Electrónico:",
                                 value=_val_dp("correo_electronico"),
                                 help="Opcional, solo para tus registros.",
+                                key=f"dp_correo_{fila_dp['dni']}",
                             )
                         with col_dp3:
                             dp_tipo_contrato = st.selectbox(
@@ -8700,6 +8704,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     " contratado (indeterminado, plazo"
                                     " fijo, etc.)."
                                 ),
+                                key=f"dp_tipo_contrato_{fila_dp['dni']}",
                             )
                             dp_modalidad = st.selectbox(
                                 "Modalidad:",
@@ -8709,6 +8714,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     _val_dp("modalidad"),
                                 ),
                                 help="Cómo trabaja habitualmente.",
+                                key=f"dp_modalidad_{fila_dp['dni']}",
                             )
                             dp_sueldo = st.number_input(
                                 "Sueldo Básico (S/):",
@@ -8720,6 +8726,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     " ni horas extra — es la base de casi"
                                     " todos los cálculos de la planilla."
                                 ),
+                                key=f"dp_sueldo_{fila_dp['dni']}",
                             )
                             dp_tipo_aport = st.selectbox(
                                 "Tipo de Aportación:",
@@ -8733,6 +8740,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     " ONP (sistema nacional de"
                                     " pensiones)."
                                 ),
+                                key=f"dp_tipo_aport_{fila_dp['dni']}",
                             )
 
                         col_dp4, col_dp5, col_dp6 = st.columns(3)
@@ -8750,6 +8758,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     " anterior o se lo puedes preguntar"
                                     " directamente."
                                 ),
+                                key=f"dp_afp_tipo_{fila_dp['dni']}",
                             )
                             dp_cuspp = st.text_input(
                                 "CUSPP (código único de AFP):",
@@ -8761,6 +8770,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     " web de su AFP. Se usa para el"
                                     " reporte AFPnet."
                                 ),
+                                key=f"dp_cuspp_{fila_dp['dni']}",
                             )
                         with col_dp5:
                             dp_exclusion = st.selectbox(
@@ -8778,6 +8788,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     " tiene invalidez, etc.). Si aporta"
                                     " normal, déjalo en blanco."
                                 ),
+                                key=f"dp_exclusion_{fila_dp['dni']}",
                             )
                         with col_dp6:
                             dp_motivo_baja = st.selectbox(
@@ -8791,6 +8802,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     "Solo si el trabajador ya no está"
                                     " activo — por qué se fue."
                                 ),
+                                key=f"dp_motivo_baja_{fila_dp['dni']}",
                             )
 
                         col_dp7, col_dp8 = st.columns(2)
@@ -8807,6 +8819,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     " vacaciones truncas — no necesitas"
                                     " calcular nada de eso a mano."
                                 ),
+                                key=f"dp_f_cese_{fila_dp['dni']}",
                             )
                         with col_dp8:
                             dp_f_fin_contrato = st.text_input(
@@ -8822,6 +8835,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     " cálculos es \"Fecha de Cese\","
                                     " arriba."
                                 ),
+                                key=f"dp_f_fin_contrato_{fila_dp['dni']}",
                             )
 
                         if st.button(
@@ -8976,7 +8990,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 "Adelantos (S/):",
                                 min_value=0.0,
                                 value=_v("adelantos"),
-                                key="v_adelantos",
+                                key=f"v_adelantos_{dni_var}_{prefix_periodo_planilla}",
                                 help=(
                                     "Dinero que ya le adelantaste al"
                                     " trabajador este período — se"
@@ -8987,7 +9001,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 "Otros Descuentos (S/):",
                                 min_value=0.0,
                                 value=_v("otros_dsctos"),
-                                key="v_otros_dsctos",
+                                key=f"v_otros_dsctos_{dni_var}_{prefix_periodo_planilla}",
                                 help=(
                                     "Cualquier otro descuento que no"
                                     " tenga su propio campo."
@@ -8997,7 +9011,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 "Días de Falta (inasistencias):",
                                 min_value=0, max_value=31, step=1,
                                 value=int(_v("dias_falta")),
-                                key="v_dias_falta",
+                                key=f"v_dias_falta_{dni_var}_{prefix_periodo_planilla}",
                                 help=(
                                     "Días que el trabajador faltó sin"
                                     " justificación. El sistema calcula"
@@ -9013,7 +9027,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 "Bono de Productividad (S/):",
                                 min_value=0.0,
                                 value=_v("bono_productividad"),
-                                key="v_bono_prod",
+                                key=f"v_bono_prod_{dni_var}_{prefix_periodo_planilla}",
                                 help="Cualquier bono variable por desempeño.",
                             )
                             v_hextra25 = st.number_input(
@@ -9021,7 +9035,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 " desde asistencia — editable):",
                                 min_value=0.0,
                                 value=_v("horas_extra_25", _hextra25_sug),
-                                key="v_hextra25",
+                                key=f"v_hextra25_{dni_var}_{prefix_periodo_planilla}",
                                 help=(
                                     "Las primeras 2 horas de exceso por"
                                     " día, según ley (D.S. N°"
@@ -9034,7 +9048,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 " desde asistencia — editable):",
                                 min_value=0.0,
                                 value=_v("horas_extra_35", _hextra35_sug),
-                                key="v_hextra35",
+                                key=f"v_hextra35_{dni_var}_{prefix_periodo_planilla}",
                                 help=(
                                     "Desde la 3ra hora de exceso en el"
                                     " mismo día en adelante, según ley."
@@ -9064,7 +9078,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 "Gratificación (S/):",
                                 min_value=0.0,
                                 value=_v("gratificacion", _gratif_sug),
-                                key="v_gratif",
+                                key=f"v_gratif_{dni_var}_{prefix_periodo_planilla}",
                                 help=(
                                     "Solo aparece en julio y diciembre"
                                     " (o antes, si hay una fecha de"
@@ -9077,7 +9091,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 "CTS (S/):",
                                 min_value=0.0,
                                 value=_v("cts", _cts_sug),
-                                key="v_cts",
+                                key=f"v_cts_{dni_var}_{prefix_periodo_planilla}",
                                 help=(
                                     "Solo aparece en mayo y noviembre (o"
                                     " antes, si hay cese). También se"
@@ -9089,7 +9103,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 "Vacaciones Truncas (S/):",
                                 min_value=0.0,
                                 value=_v("vacaciones_truncas", _vactruncas_sug),
-                                key="v_vac_truncas",
+                                key=f"v_vac_truncas_{dni_var}_{prefix_periodo_planilla}",
                                 help=(
                                     "Solo aparece si el trabajador tiene"
                                     " una Fecha de Cese este mes"
@@ -9107,7 +9121,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 "Días de Vacaciones Tomadas este Período:",
                                 min_value=0, max_value=30, step=1,
                                 value=int(_v("dias_vacaciones_tomadas")),
-                                key="v_dias_vac_tomadas",
+                                key=f"v_dias_vac_tomadas_{dni_var}_{prefix_periodo_planilla}",
                                 help=(
                                     "Cuántos días de vacaciones tomó el"
                                     " trabajador en este período. Con eso"
@@ -9131,7 +9145,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 " este Período:",
                                 min_value=0, max_value=30, step=1,
                                 value=int(_v("dias_feriado_trabajados")),
-                                key="v_dias_feriado",
+                                key=f"v_dias_feriado_{dni_var}_{prefix_periodo_planilla}",
                                 help=(
                                     "Cuántos días feriados o de descanso"
                                     " trabajó este período. Con eso se"
@@ -9166,13 +9180,13 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                         "remuneracion_vacacional",
                                         _rem_vac_sug,
                                     ),
-                                    key="v_rem_vac",
+                                    key=f"v_rem_vac_{dni_var}_{prefix_periodo_planilla}",
                                 )
                                 v_comp_vac = st.number_input(
                                     "Compensación Vacacional (S/):",
                                     min_value=0.0,
                                     value=_v("compensacion_vacacional"),
-                                    key="v_comp_vac",
+                                    key=f"v_comp_vac_{dni_var}_{prefix_periodo_planilla}",
                                     help=(
                                         "Cuando se le paga en dinero en"
                                         " vez de darle los días libres"
@@ -9186,7 +9200,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     " arriba):",
                                     min_value=0.0,
                                     value=_v("dia_feriado_descanso", _feriado_sug),
-                                    key="v_feriado",
+                                    key=f"v_feriado_{dni_var}_{prefix_periodo_planilla}",
                                     help=(
                                         "Se calcula solo con los 'Días de"
                                         " Feriado/Descanso Trabajados'"
@@ -9199,7 +9213,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     "Reintegro (S/):",
                                     min_value=0.0,
                                     value=_v("reintegro"),
-                                    key="v_reintegro",
+                                    key=f"v_reintegro_{dni_var}_{prefix_periodo_planilla}",
                                     help=(
                                         "Un pago pendiente de un período"
                                         " anterior que se le abona ahora."
@@ -9209,7 +9223,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     "Subsidios (S/):",
                                     min_value=0.0,
                                     value=_v("subsidios"),
-                                    key="v_subsidios",
+                                    key=f"v_subsidios_{dni_var}_{prefix_periodo_planilla}",
                                     help=(
                                         "Pagos de EsSalud por descanso"
                                         " médico (no los paga la"
@@ -9221,7 +9235,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     "Canasta Navideña (S/):",
                                     min_value=0.0,
                                     value=_v("canasta_navidena"),
-                                    key="v_canasta",
+                                    key=f"v_canasta_{dni_var}_{prefix_periodo_planilla}",
                                     help="Si le das canasta u obsequio en soles.",
                                 )
                             with col_v7:
@@ -9229,7 +9243,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     "Otros - Gratif. Extraordinaria (S/):",
                                     min_value=0.0,
                                     value=_v("otros_gratif_extraord"),
-                                    key="v_otros_gratif",
+                                    key=f"v_otros_gratif_{dni_var}_{prefix_periodo_planilla}",
                                     help=(
                                         "Un bono extra por mutuo acuerdo"
                                         " al terminar la relación laboral"
@@ -9240,14 +9254,14 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     "Movilidad (S/):",
                                     min_value=0.0,
                                     value=_v("movilidad"),
-                                    key="v_movilidad",
+                                    key=f"v_movilidad_{dni_var}_{prefix_periodo_planilla}",
                                     help="Pasajes o combustible que le reconoces.",
                                 )
                                 v_refrigerio = st.number_input(
                                     "Refrigerio (S/):",
                                     min_value=0.0,
                                     value=_v("refrigerio"),
-                                    key="v_refrigerio",
+                                    key=f"v_refrigerio_{dni_var}_{prefix_periodo_planilla}",
                                     help="Almuerzo o refrigerio que le das en soles.",
                                 )
 
@@ -9257,7 +9271,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     "Herramientas (S/):",
                                     min_value=0.0,
                                     value=_v("herramientas"),
-                                    key="v_herramientas",
+                                    key=f"v_herramientas_{dni_var}_{prefix_periodo_planilla}",
                                     help=(
                                         "Si le das dinero para comprar"
                                         " sus propias herramientas de"
@@ -9268,14 +9282,14 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     "Otros Conceptos Supeditados (S/):",
                                     min_value=0.0,
                                     value=_v("otros_conceptos"),
-                                    key="v_otros_conc",
+                                    key=f"v_otros_conc_{dni_var}_{prefix_periodo_planilla}",
                                     help="Cualquier otro ingreso que no tenga campo propio.",
                                 )
                                 v_otros_deduc = st.number_input(
                                     "Otros Deducibles Base Imponible (S/):",
                                     min_value=0.0,
                                     value=_v("otros_deducibles"),
-                                    key="v_otros_deduc",
+                                    key=f"v_otros_deduc_{dni_var}_{prefix_periodo_planilla}",
                                     help=(
                                         "Un descuento que SÍ afecta el"
                                         " cálculo de AFP/ONP (poco común"
@@ -9287,14 +9301,14 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     "Otros (S/):",
                                     min_value=0.0,
                                     value=_v("otros"),
-                                    key="v_otros",
+                                    key=f"v_otros_{dni_var}_{prefix_periodo_planilla}",
                                     help="Cualquier otro descuento suelto.",
                                 )
                                 v_sctr = st.number_input(
                                     "SCTR (S/):",
                                     min_value=0.0,
                                     value=_v("sctr"),
-                                    key="v_sctr",
+                                    key=f"v_sctr_{dni_var}_{prefix_periodo_planilla}",
                                     help=(
                                         "Seguro Complementario de Trabajo"
                                         " de Riesgo — solo si tu empresa"
@@ -9308,7 +9322,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     "Seguro de Vida Ley (S/):",
                                     min_value=0.0,
                                     value=_v("seguro_vida_ley"),
-                                    key="v_seguro_vida",
+                                    key=f"v_seguro_vida_{dni_var}_{prefix_periodo_planilla}",
                                     help=(
                                         "La prima mensual que le pagas a"
                                         " tu aseguradora por el Seguro de"
