@@ -3001,6 +3001,19 @@ def calcular_planilla_trabajador(
     )
     rem_vacacional = _n("remuneracion_vacacional", rem_vacacional_auto)
 
+    # Día Feriado/Descanso trabajado — mismo patrón que Vacaciones
+    # Tomadas: le dices cuántos días feriados/de descanso trabajó este
+    # período (dato manual, ver 'Datos Variables'), y el sistema
+    # calcula solo el pago (SIMPLIFICACIÓN: se paga el día simple —
+    # sueldo/30 × días — sin el recargo adicional del 100% que exige la
+    # ley por trabajar feriado, ya que ese recargo depende del tipo de
+    # feriado y no lo tenemos parametrizado; revísalo con tu contador
+    # si necesitas el cálculo exacto con el recargo).
+    dias_feriado_trabajados = _n("dias_feriado_trabajados")
+    dia_feriado_auto = round(
+        (sueldo_basico / 30) * dias_feriado_trabajados, 2
+    )
+
     # CORRECCIÓN IMPORTANTE: el sueldo se paga sobre 30 días CALENDARIO,
     # no sobre los días que realmente tienen marcación de asistencia.
     # Un trabajador que marca, por ejemplo, de lunes a sábado (26 días)
@@ -3012,6 +3025,15 @@ def calcular_planilla_trabajador(
     # trabajador siempre cobra su sueldo básico completo.
     dias_falta = _n("dias_falta")
     dias_pagados_base = max(30 - dias_falta, 0)
+
+    # HORAS LABORADAS (cuadro pedido): parte de 208 horas (26 días × 8
+    # horas, el estándar de un mes completo sin faltas) y baja 8 horas
+    # por cada día de falta real. DÍAS NO LABORADOS es el mismo dato de
+    # 'dias_falta' (ya lo tenías como input manual), mostrado también
+    # aquí en el cuadro de Control de Asistencia para verlo junto a
+    # las horas.
+    horas_laboradas = max(208 - (dias_falta * 8), 0)
+    dias_no_laborados = dias_falta
 
     JORNADA_MINUTOS = 480  # 8 horas, la hora de almuerzo no se cuenta
     minutos_esperados = dias_pagados_base * JORNADA_MINUTOS
@@ -3063,7 +3085,7 @@ def calcular_planilla_trabajador(
         "remuneracion_vacacional": rem_vacacional,
         "vacaciones_truncas": _n("vacaciones_truncas", vac_truncas_auto),
         "compensacion_vacacional": _n("compensacion_vacacional"),
-        "dia_feriado_descanso": _n("dia_feriado_descanso"),
+        "dia_feriado_descanso": _n("dia_feriado_descanso", dia_feriado_auto),
         "horas_extra_25": _n("horas_extra_25", horas_extra_25_sugerido),
         "horas_extra_35": _n("horas_extra_35", horas_extra_35_sugerido),
         "reintegro": _n("reintegro"),
@@ -3147,8 +3169,16 @@ def calcular_planilla_trabajador(
     seguro_vida = _n("seguro_vida_ley")
     sctr = _n("sctr")
     total_aportes = round(sctr + essalud + seguro_vida, 2)
+    # CORREGIDO (bug real reportado y confirmado): la fórmula anterior
+    # restaba los adelantos DOS VECES (una vez porque ya están sumados
+    # dentro de total_descuentos, y otra vez aparte) — eso hacía que
+    # subir el adelanto bajara el costo de planilla de forma
+    # incorrecta. Un adelanto no es un costo extra para la empresa, es
+    # solo pagar antes una parte del mismo neto — el costo total no
+    # debería cambiar por eso. Fórmula correcta: Total Aportes + Neto a
+    # Pagar + Adelantos + Total Retenciones.
     costo_planilla = round(
-        total_bruta - (total_descuentos + adelantos) + total_aportes, 2
+        total_aportes + neto_a_pagar + adelantos + total_retenciones, 2
     )
 
     return {
@@ -3157,6 +3187,8 @@ def calcular_planilla_trabajador(
         "total_bruta": total_bruta,
         **descuentos,
         "dias_falta": dias_falta,
+        "horas_laboradas": horas_laboradas,
+        "dias_no_laborados": dias_no_laborados,
         "descuento_dias_falta": descuento_dias_falta,
         "descuento_dominical": descuento_dominical,
         "tardanza_equivalente_soles": tardanza_equivalente_soles,
@@ -4065,12 +4097,12 @@ def _construir_hoja_planilla(
     # (número de columnas) — 'clave_tinte' define con qué color se
     # pintan las columnas de DATOS de esa sección más abajo.
     grupos = [
-        ("DATOS DEL TRABAJADOR", 11, fill_navy, "datos"),
+        ("DATOS DEL TRABAJADOR", 12, fill_navy, "datos"),
         ("CONTRATO", 10, fill_navy, "datos"),
-        ("CONTROL ASISTENCIA", 3, fill_navy, "asistencia"),
+        ("CONTROL ASISTENCIA", 5, fill_navy, "asistencia"),
         ("INGRESOS DEL TRABAJADOR", 20, fill_verde, "ingresos"),
         ("DESCUENTOS AL TRABAJADOR", 10, fill_rojo, "descuentos"),
-        ("RETENCIONES AL TRABAJADOR", 9, fill_navy, "retenciones"),
+        ("RETENCIONES AL TRABAJADOR", 10, fill_navy, "retenciones"),
         ("APORTACIONES DEL EMPLEADOR", 5, fill_navy, "aportes"),
     ]
     col_actual = 1
@@ -4099,6 +4131,11 @@ def _construir_hoja_planilla(
         ("APELLIDO PATERNO", None),
         ("APELLIDO MATERNO", None),
         ("NOMBRES", None),
+        (
+            "APELLIDOS Y NOMBRES",
+            "= Apellido Paterno + Apellido Materno + Nombres, combinados"
+            " en un solo campo (para referencia rápida).",
+        ),
         ("GÉNERO", None),
         ("FECHA DE NACIMIENTO", None),
         ("EDAD", "= (Hoy − Fecha de Nacimiento) ÷ 365, en años completos."),
@@ -4126,6 +4163,16 @@ def _construir_hoja_planilla(
             "DÍAS LABORADOS",
             "= Días del mes con marcación de Entrada válida (Puntual o"
             " Tardanza), traído de tu asistencia real.",
+        ),
+        (
+            "HORAS LABORADAS",
+            "= 208 horas (26 días × 8h, un mes completo sin faltas) menos"
+            " 8 horas por cada Día de Falta real.",
+        ),
+        (
+            "DÍAS NO LABORADOS",
+            "= Días de Falta que ingresaste manualmente (Datos"
+            " Variables del Período) — días sin ninguna marcación.",
         ),
         (
             "TARDANZAS (min)",
@@ -4225,6 +4272,11 @@ def _construir_hoja_planilla(
             " que se calcula ESSALUD.",
         ),
         ("TIPO APORTACIÓN", "AFP u ONP (Datos Maestros de Planilla)."),
+        (
+            "AFP",
+            "La AFP específica del trabajador (o vacío si aporta a"
+            " ONP) — Datos Maestros de Planilla.",
+        ),
         (
             "TOTAL ONP",
             "= 13% de la Remuneración Computable (solo si el tipo de"
@@ -4345,6 +4397,7 @@ def _construir_hoja_planilla(
             n_fila, dni,
             emp.get("apellido_paterno", ""), emp.get("apellido_materno", ""),
             emp.get("nombres", "") or emp["nombre"],
+            emp["nombre"],
             emp.get("genero", ""), emp.get("fecha_nacimiento", ""),
             calcular_edad(emp.get("fecha_nacimiento", "")),
             emp.get("cta_bancaria", ""), emp.get("banco", ""),
@@ -4357,7 +4410,8 @@ def _construir_hoja_planilla(
             calcular_permanencia_texto(
                 emp.get("fecha_ingreso", ""), fecha_cese_emp
             ),
-            dias_laborados, min_tardanza, min_extra,
+            dias_laborados, calc["horas_laboradas"], calc["dias_no_laborados"],
+            min_tardanza, min_extra,
             calc["sueldo_basico_mes"], calc["remuneracion_vacacional"],
             calc["vacaciones_truncas"], calc["compensacion_vacacional"],
             calc["dia_feriado_descanso"], calc["horas_extra_25"],
@@ -4372,7 +4426,8 @@ def _construir_hoja_planilla(
             calc["otros_deducibles"], calc["otros"], calc["otros_dsctos"],
             calc["adelantos"], calc["total_descuentos"],
             calc["total_computable"], calc["total_computable_subsidios"],
-            emp.get("tipo_aportacion", ""), calc["total_onp"],
+            emp.get("tipo_aportacion", ""), emp.get("afp_tipo", ""),
+            calc["total_onp"],
             calc["aporte_obligatorio"], calc["comision_afp"],
             calc["prima_seguro"], calc["total_afp"], calc["renta_5ta"],
             calc["total_retenciones"], calc["neto_a_pagar"],
@@ -4411,7 +4466,7 @@ def _construir_hoja_planilla(
     # Ocultar (no borrar) las columnas numéricas donde TODOS los
     # trabajadores dieron 0 — para que la planilla se vea más limpia
     # sin perder el dato por si se necesita después.
-    columnas_no_ocultables = set(range(1, 22))  # datos de identificación/
+    columnas_no_ocultables = set(range(1, 23))  # datos de identificación/
     # contrato: nunca se ocultan aunque den 0 (N° a PERMANENCIA)
     for col_idx in range(1, n_columnas + 1):
         if col_idx in columnas_no_ocultables or r <= 8:
@@ -8782,6 +8837,35 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 * v_dias_vac_tomadas,
                                 2,
                             )
+                            v_dias_feriado = st.number_input(
+                                "Días de Feriado/Descanso Trabajados"
+                                " este Período:",
+                                min_value=0, max_value=30, step=1,
+                                value=int(_v("dias_feriado_trabajados")),
+                                key="v_dias_feriado",
+                                help=(
+                                    "Cuántos días feriados o de descanso"
+                                    " trabajó este período. Con eso se"
+                                    " calcula solo el pago de 'Día"
+                                    " Feriado/Descanso' de abajo"
+                                    " (editable si hace falta"
+                                    " ajustarlo). Nota: se paga el día"
+                                    " simple, sin el recargo adicional"
+                                    " que exige la ley por trabajar"
+                                    " feriado — revísalo con tu"
+                                    " contador si lo necesitas exacto."
+                                ),
+                            )
+                            _feriado_sug = round(
+                                (
+                                    float(
+                                        fila_var.get("sueldo_basico", 0) or 0
+                                    )
+                                    / 30
+                                )
+                                * v_dias_feriado,
+                                2,
+                            )
                             col_v5, col_v6, col_v7 = st.columns(3)
                             with col_v5:
                                 v_rem_vac = st.number_input(
@@ -8808,14 +8892,17 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     ),
                                 )
                                 v_feriado = st.number_input(
-                                    "Día Feriado/Descanso (S/):",
+                                    "Día Feriado/Descanso (S/, calculado"
+                                    " automático desde los días de"
+                                    " arriba):",
                                     min_value=0.0,
-                                    value=_v("dia_feriado_descanso"),
+                                    value=_v("dia_feriado_descanso", _feriado_sug),
                                     key="v_feriado",
                                     help=(
-                                        "Si trabajó un feriado o su día de"
-                                        " descanso, el pago extra por ese"
-                                        " día."
+                                        "Se calcula solo con los 'Días de"
+                                        " Feriado/Descanso Trabajados'"
+                                        " de arriba. Editable si hace"
+                                        " falta ajustarlo."
                                     ),
                                 )
                             with col_v6:
@@ -8951,6 +9038,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 "periodo": prefix_periodo_planilla,
                                 "remuneracion_vacacional": v_rem_vac,
                                 "dias_vacaciones_tomadas": v_dias_vac_tomadas,
+                                "dias_feriado_trabajados": v_dias_feriado,
                                 "vacaciones_truncas": v_vac_truncas,
                                 "compensacion_vacacional": v_comp_vac,
                                 "dia_feriado_descanso": v_feriado,
