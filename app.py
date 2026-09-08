@@ -370,21 +370,25 @@ def render_animacion_verificando(logo_url):
     """Animación corta (tipo Lottie) que se muestra justo después de un
     login exitoso, antes de pasar a la pantalla de consentimiento o de
     marcar — un anillo con degradado cyan-violeta que se dibuja solo
-    alrededor del logo de la empresa, con un beep corto al terminar."""
+    alrededor del logo de la empresa, con un pulso de brillo y un
+    acorde corto al terminar."""
     html = f"""
     <div style="position:fixed; inset:0; z-index:9998;
-        background:rgba(10,14,26,0.94); display:flex;
+        background:rgba(10,14,26,0.95); display:flex;
         flex-direction:column; align-items:center; justify-content:center;">
-        <div style="position:relative; width:110px; height:110px;">
-            <svg width="110" height="110" viewBox="0 0 110 110"
+        <div style="position:relative; width:170px; height:170px;">
+            <div style="position:absolute; inset:0; border-radius:50%;
+                background:radial-gradient(circle, rgba(88,166,255,0.25), transparent 70%);
+                animation:fac-pulso-verif 1.4s ease-out infinite;"></div>
+            <svg width="170" height="170" viewBox="0 0 170 170"
                 style="position:absolute; top:0; left:0;">
-                <circle cx="55" cy="55" r="42" fill="none"
-                    stroke="rgba(255,255,255,0.12)" stroke-width="5"/>
-                <circle cx="55" cy="55" r="42" fill="none"
-                    stroke="url(#fac-grad-verif)" stroke-width="5"
-                    stroke-linecap="round" stroke-dasharray="264"
-                    stroke-dashoffset="264" transform="rotate(-90 55 55)"
-                    style="animation:fac-anillo-verif 0.9s ease forwards;"/>
+                <circle cx="85" cy="85" r="66" fill="none"
+                    stroke="rgba(255,255,255,0.12)" stroke-width="6"/>
+                <circle cx="85" cy="85" r="66" fill="none"
+                    stroke="url(#fac-grad-verif)" stroke-width="6"
+                    stroke-linecap="round" stroke-dasharray="415"
+                    stroke-dashoffset="415" transform="rotate(-90 85 85)"
+                    style="animation:fac-anillo-verif 1s ease forwards;"/>
                 <defs>
                     <linearGradient id="fac-grad-verif" x1="0" y1="0" x2="1" y2="1">
                         <stop offset="0%" stop-color="#58a6ff"/>
@@ -392,30 +396,41 @@ def render_animacion_verificando(logo_url):
                     </linearGradient>
                 </defs>
             </svg>
-            <img src="{logo_url}" style="position:absolute; top:20px; left:20px;
-                width:70px; height:70px; object-fit:contain; border-radius:50%;
-                opacity:0; animation:fac-logo-in-verif 0.4s ease 0.75s forwards;"/>
+            <img src="{logo_url}" style="position:absolute; top:31px; left:31px;
+                width:108px; height:108px; object-fit:contain;
+                opacity:0; filter:drop-shadow(0 0 14px rgba(88,166,255,0.6));
+                animation:fac-logo-in-verif 0.4s ease 0.85s forwards;"/>
         </div>
-        <div style="color:#8b949e; font-size:13px; margin-top:14px;
-            font-family:'Space Grotesk',sans-serif;">
+        <div style="color:#8b949e; font-size:14px; margin-top:18px;
+            font-family:'Space Grotesk',sans-serif; letter-spacing:0.5px;">
             Verificando identidad...
         </div>
     </div>
     <style>
     @keyframes fac-anillo-verif {{ to {{ stroke-dashoffset: 0; }} }}
     @keyframes fac-logo-in-verif {{ to {{ opacity:1; }} }}
+    @keyframes fac-pulso-verif {{
+        0% {{ transform:scale(0.85); opacity:0.8; }}
+        100% {{ transform:scale(1.35); opacity:0; }}
+    }}
     </style>
     <script>
     (function(){{
-        try{{
-            var ctx = new (window.AudioContext||window.webkitAudioContext)();
-            var o=ctx.createOscillator(), g=ctx.createGain();
-            o.type='sine'; o.frequency.value=880;
-            g.gain.setValueAtTime(0.12, ctx.currentTime);
-            g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime+0.15);
-            o.connect(g); g.connect(ctx.destination);
-            o.start(); o.stop(ctx.currentTime+0.15);
-        }}catch(e){{}}
+        function tono(freq, dur, delay){{
+            setTimeout(function(){{
+                try{{
+                    var ctx = new (window.AudioContext||window.webkitAudioContext)();
+                    var o=ctx.createOscillator(), g=ctx.createGain();
+                    o.type='sine'; o.frequency.value=freq;
+                    g.gain.setValueAtTime(0.12, ctx.currentTime);
+                    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime+dur);
+                    o.connect(g); g.connect(ctx.destination);
+                    o.start(); o.stop(ctx.currentTime+dur);
+                }}catch(e){{}}
+            }}, delay);
+        }}
+        tono(660, 0.12, 850);
+        tono(880, 0.18, 950);
     }})();
     </script>
     """
@@ -423,8 +438,9 @@ def render_animacion_verificando(logo_url):
 
 
 def render_animacion_marcado_exitoso(logo_url, hora_texto, estado="Puntual", racha=0):
-    """Reemplaza la antigua animación de 'globos': un sello con el logo
-    de la empresa cae con rebote elástico + sonido tipo 'thump'.
+    """Sello "a lo sello oficial" (grande, dramático, con temblor de
+    pantalla al caer) + sonido de impacto + confetti — reemplaza la
+    antigua animación de "globos".
 
     CONECTADO A LA LÓGICA REAL de la app (no es solo decorativo):
     - Si 'estado' es 'Tardanza', el sello sale en ámbar/naranja, sin
@@ -440,24 +456,26 @@ def render_animacion_marcado_exitoso(logo_url, hora_texto, estado="Puntual", rac
     es_tardanza = str(estado).strip().upper() == "TARDANZA"
     color_principal = "#ffab40" if es_tardanza else "#58a6ff"
     color_secundario = "#ff7043" if es_tardanza else "#a371f7"
-    texto_sello = "TARDANZA" if es_tardanza else "MARCADO"
+    texto_sello = "TARDANZA" if es_tardanza else "MARCADO ✔"
     glow_sombra = (
-        "0 0 40px rgba(255,171,64,0.55), 0 0 80px rgba(255,112,67,0.25)"
+        "0 0 60px rgba(255,171,64,0.65), 0 0 120px rgba(255,112,67,0.35),"
+        " inset 0 0 30px rgba(255,171,64,0.25)"
         if es_tardanza
-        else "0 0 40px rgba(88,166,255,0.6), 0 0 80px rgba(163,113,247,0.3)"
+        else "0 0 60px rgba(88,166,255,0.7), 0 0 120px rgba(163,113,247,0.4),"
+        " inset 0 0 30px rgba(88,166,255,0.25)"
     )
     fondo_sello = (
-        "radial-gradient(circle, rgba(255,171,64,0.18), rgba(255,112,67,0.10))"
+        "radial-gradient(circle, rgba(255,171,64,0.22), rgba(255,112,67,0.12))"
         if es_tardanza
-        else "radial-gradient(circle, rgba(88,166,255,0.18), rgba(163,113,247,0.10))"
+        else "radial-gradient(circle, rgba(88,166,255,0.22), rgba(163,113,247,0.12))"
     )
     mostrar_racha = (not es_tardanza) and racha >= 2
     badge_racha_html = (
         f"""
-        <div id="fac-racha" style="position:absolute; top:-14px; right:-14px;
+        <div id="fac-racha" style="position:absolute; top:-18px; right:-18px;
             background:linear-gradient(135deg, #ff7043, #ffab40);
-            border-radius:20px; padding:5px 12px; font-size:13px;
-            font-weight:700; color:#1a1206; box-shadow:0 0 16px rgba(255,171,64,0.6);
+            border-radius:24px; padding:7px 16px; font-size:16px;
+            font-weight:800; color:#1a1206; box-shadow:0 0 20px rgba(255,171,64,0.7);
             transform:scale(0); font-family:'Space Grotesk',sans-serif;">
             🔥 {racha}
         </div>
@@ -477,8 +495,8 @@ def render_animacion_marcado_exitoso(logo_url, hora_texto, estado="Puntual", rac
                 var canvas = document.getElementById('fac-canvas-confetti');
                 canvas.width = window.innerWidth; canvas.height = window.innerHeight;
                 var miConfetti = confetti.create(canvas, {resize:true});
-                miConfetti({particleCount:70, spread:80, origin:{y:0.5},
-                    colors:['#58a6ff','#a371f7','#79c0ff']});
+                miConfetti({particleCount:130, spread:100, startVelocity:45,
+                    origin:{y:0.5}, colors:['#58a6ff','#a371f7','#79c0ff','#ffffff']});
             } else if(intentos > 20){
                 clearInterval(intervalo);
             }
@@ -488,24 +506,24 @@ def render_animacion_marcado_exitoso(logo_url, hora_texto, estado="Puntual", rac
     html = f"""
     <div id="fac-capa-sello" style="position:fixed; inset:0; z-index:9998;
         display:flex; align-items:center; justify-content:center;
-        background:rgba(10,14,26,0.5); pointer-events:none;">
+        background:rgba(10,14,26,0.6); pointer-events:none;">
         <div style="position:relative;">
             {badge_racha_html}
-            <div id="fac-sello" style="width:220px; height:220px; border-radius:50%;
-                border:6px solid {color_principal}; background:{fondo_sello};
+            <div id="fac-sello" style="width:320px; height:320px; border-radius:50%;
+                border:12px double {color_principal}; background:{fondo_sello};
                 display:flex; flex-direction:column; align-items:center;
                 justify-content:center; box-shadow:{glow_sombra};
-                transform:scale(2.2) rotate(-18deg); opacity:0;">
-                <img src="{logo_url}" style="width:44px; height:44px; object-fit:contain;
-                    border-radius:50%; background:rgba(255,255,255,0.9);
-                    margin-bottom:8px;"/>
-                <div style="font-size:22px; font-weight:700; color:{color_principal};
-                    letter-spacing:1px; font-family:'Space Grotesk',sans-serif;">
+                transform:scale(3.2) rotate(-25deg); opacity:0;">
+                <img src="{logo_url}" style="width:76px; height:76px; object-fit:contain;
+                    margin-bottom:10px; filter:drop-shadow(0 0 10px rgba(0,0,0,0.4));"/>
+                <div style="font-size:32px; font-weight:800; color:{color_principal};
+                    letter-spacing:2px; font-family:'Space Grotesk',sans-serif;
+                    text-shadow:0 0 18px {color_principal};">
                     {texto_sello}
                 </div>
-                <div style="font-size:12px; color:{color_secundario}; margin-top:2px;
-                    font-family:'Space Grotesk',sans-serif;">
-                    {hora_texto} ✓
+                <div style="font-size:15px; color:{color_secundario}; margin-top:4px;
+                    font-family:'Space Grotesk',sans-serif; font-weight:600;">
+                    {hora_texto}
                 </div>
             </div>
         </div>
@@ -515,13 +533,13 @@ def render_animacion_marcado_exitoso(logo_url, hora_texto, estado="Puntual", rac
     <script src="https://cdnjs.cloudflare.com/ajax/libs/canvas-confetti/1.9.2/confetti.browser.min.js"></script>
     <script>
     (function(){{
-        function tono(freq, dur, delay){{
+        function tono(freq, dur, delay, tipo){{
             setTimeout(function(){{
                 try{{
                     var ctx = new (window.AudioContext||window.webkitAudioContext)();
                     var o=ctx.createOscillator(), g=ctx.createGain();
-                    o.type='sine'; o.frequency.value=freq;
-                    g.gain.setValueAtTime(0.15, ctx.currentTime);
+                    o.type = tipo || 'sine'; o.frequency.value=freq;
+                    g.gain.setValueAtTime(0.18, ctx.currentTime);
                     g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime+dur);
                     o.connect(g); g.connect(ctx.destination);
                     o.start(); o.stop(ctx.currentTime+dur);
@@ -531,23 +549,38 @@ def render_animacion_marcado_exitoso(logo_url, hora_texto, estado="Puntual", rac
         var sello = document.getElementById('fac-sello');
         var racha = document.getElementById('fac-racha');
         var capa = document.getElementById('fac-capa-sello');
-        tono({660 if not es_tardanza else 520}, 0.08, 0);
-        tono({990 if not es_tardanza else 660}, 0.18, 90);
+
+        // Golpe grave de impacto (el "thump" real) + los 2 tonos de siempre
+        tono(70, 0.35, 260, 'sine');
+        tono({660 if not es_tardanza else 520}, 0.08, 260, 'sine');
+        tono({990 if not es_tardanza else 660}, 0.18, 350, 'sine');
+
         requestAnimationFrame(function(){{
-            sello.style.transition = 'transform 0.35s cubic-bezier(.34,1.56,.64,1), opacity 0.2s ease';
+            sello.style.transition = 'transform 0.28s cubic-bezier(.2,1.8,.4,1), opacity 0.15s ease';
             sello.style.transform = 'scale(1) rotate(-8deg)';
             sello.style.opacity = '1';
         }});
+        // Temblor de pantalla justo cuando el sello "impacta"
+        setTimeout(function(){{
+            document.body.style.transition = 'transform 0.06s ease';
+            var pasos = [[6,-4],[-6,3],[4,-3],[-3,2],[0,0]];
+            var i = 0;
+            var sacudir = setInterval(function(){{
+                if(i >= pasos.length){{ clearInterval(sacudir); return; }}
+                document.body.style.transform = 'translate('+pasos[i][0]+'px,'+pasos[i][1]+'px)';
+                i++;
+            }}, 45);
+        }}, 260);
         if(racha){{
             setTimeout(function(){{
                 racha.style.transition = 'transform 0.3s cubic-bezier(.34,1.56,.64,1)';
                 racha.style.transform = 'scale(1)';
-            }}, 380);
+            }}, 560);
         }}
         {confetti_js}
         setTimeout(function(){{
             capa.style.display = 'none';
-        }}, 2200);
+        }}, 2400);
     }})();
     </script>
     """
@@ -5289,33 +5322,34 @@ if opcion == "⏰ Marcar Asistencia":
         '<div style="position:fixed; inset:0; z-index:-1; overflow:hidden;'
         ' pointer-events:none;">'
     )
-    for _m in range(5):
-        _top_ini = random.randint(-10, 40)
-        _left_ini = random.randint(60, 130)
-        _delay_m = round(random.uniform(0, 9), 2)
-        _dur_m = round(random.uniform(6, 10), 2)
-        _tam = random.randint(20, 34)
+    for _m in range(4):
+        _top_ini = random.randint(-10, 35)
+        _left_ini = random.randint(55, 125)
+        _delay_m = round(random.uniform(0, 7), 2)
+        _dur_m = round(random.uniform(5, 8), 2)
+        _tam = random.randint(60, 100)
         _html_meteoros += f"""
         <div style="position:absolute; top:{_top_ini}%; left:{_left_ini}%;
             width:{_tam}px; height:{_tam}px;
             animation:fac-meteoro {_dur_m}s linear {_delay_m}s infinite;">
             <div style="position:absolute; right:100%; top:50%;
-                width:90px; height:2px; transform:translateY(-50%);
+                width:220px; height:5px; transform:translateY(-50%);
                 background:linear-gradient(90deg, transparent,
-                rgba(88,166,255,0.5));"></div>
+                rgba(88,166,255,0.75));"></div>
             <img src="{_logo_meteoros}" style="width:100%; height:100%;
-                object-fit:contain; border-radius:50%; opacity:0.55;
-                filter:drop-shadow(0 0 6px rgba(88,166,255,0.6));"/>
+                object-fit:contain; opacity:0.85;
+                filter:drop-shadow(0 0 16px rgba(88,166,255,0.85))
+                drop-shadow(0 0 30px rgba(163,113,247,0.5));"/>
         </div>
         """
     _html_meteoros += """
     </div>
     <style>
     @keyframes fac-meteoro{
-        0%{ transform:translate(0,0); opacity:0; }
-        6%{ opacity:0.6; }
-        94%{ opacity:0.5; }
-        100%{ transform:translate(-160vw, 160vh); opacity:0; }
+        0%{ transform:translate(0,0) rotate(0deg); opacity:0; }
+        6%{ opacity:0.9; }
+        94%{ opacity:0.75; }
+        100%{ transform:translate(-160vw, 160vh) rotate(-25deg); opacity:0; }
     }
     @media (prefers-reduced-motion: reduce){
         [style*="fac-meteoro"]{ animation:none !important; }
@@ -5482,7 +5516,7 @@ if opcion == "⏰ Marcar Asistencia":
                                 "logo_globos_url", "/app/static/icon-192.png"
                             )
                             render_animacion_verificando(_logo_verif)
-                            _dormir(1.6)
+                            _dormir(1.8)
                             st.rerun()
                         else:
                             st.error(
