@@ -439,15 +439,25 @@ ubicación GPS con la única finalidad descrita.
 
 
 def render_animacion_verificando(logo_url):
-    """Animación corta (tipo Lottie) que se muestra justo después de un
-    login exitoso, antes de pasar a la pantalla de consentimiento o de
-    marcar — un anillo con degradado cyan-violeta que se dibuja solo
-    alrededor del logo de la empresa, con un pulso de brillo y un
-    acorde corto al terminar."""
+    """Animación corta (100% CSS, sin JavaScript) que se muestra justo
+    después de un login exitoso, antes de pasar a la pantalla de
+    consentimiento o de marcar — un anillo con degradado cyan-violeta
+    que se dibuja solo alrededor del logo de la empresa.
+
+    POR QUÉ ES SOLO CSS (decisión tomada después de varios bugs serios):
+    se intentó una versión con sonido y JavaScript real (via un iframe
+    que inyectaba contenido en la página), pero resultó poco confiable
+    entre navegadores — llegó a dejar la pantalla completamente negra
+    de forma permanente. Esta versión usa render_html() normal (el
+    mismo mecanismo que ya usan el fondo animado y los meteoritos, que
+    nunca han fallado) — vive dentro del árbol que Streamlit controla,
+    así que desaparece sola en el siguiente rerun, sin necesitar ningún
+    JavaScript de limpieza que se pueda romper."""
     html = f"""
     <div style="position:fixed; inset:0; z-index:9998;
         background:rgba(10,14,26,0.95); display:flex;
-        flex-direction:column; align-items:center; justify-content:center;">
+        flex-direction:column; align-items:center; justify-content:center;
+        animation:fac-desvanecer-verif 0.4s ease 1.6s forwards;">
         <div style="position:relative; width:170px; height:170px;">
             <div style="position:absolute; inset:0; border-radius:50%;
                 background:radial-gradient(circle, rgba(88,166,255,0.25), transparent 70%);
@@ -485,46 +495,35 @@ def render_animacion_verificando(logo_url):
         0% {{ transform:scale(0.85); opacity:0.8; }}
         100% {{ transform:scale(1.35); opacity:0; }}
     }}
+    @keyframes fac-desvanecer-verif {{ to {{ opacity:0; visibility:hidden; }} }}
     </style>
-    <script>
-    (function(){{
-        function tono(freq, dur, delay){{
-            setTimeout(function(){{
-                try{{
-                    var ctx = new (window.AudioContext||window.webkitAudioContext)();
-                    var o=ctx.createOscillator(), g=ctx.createGain();
-                    o.type='sine'; o.frequency.value=freq;
-                    g.gain.setValueAtTime(0.12, ctx.currentTime);
-                    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime+dur);
-                    o.connect(g); g.connect(ctx.destination);
-                    o.start(); o.stop(ctx.currentTime+dur);
-                }}catch(e){{}}
-            }}, delay);
-        }}
-        tono(660, 0.12, 850);
-        tono(880, 0.18, 950);
-    }})();
-    </script>
     """
-    render_script(html, limpieza_ms=1400)
+    render_html(html)
 
 
 def render_animacion_marcado_exitoso(logo_url, hora_texto, estado="Puntual", racha=0):
-    """Sello "a lo sello oficial" (grande, dramático, con temblor de
-    pantalla al caer) + sonido de impacto + confetti — reemplaza la
-    antigua animación de "globos".
+    """Sello grande y dramático (100% CSS, sin JavaScript ni sonido) —
+    cae con rebote elástico y se desvanece solo.
 
-    CONECTADO A LA LÓGICA REAL de la app (no es solo decorativo):
-    - Si 'estado' es 'Tardanza', el sello sale en ámbar/naranja, sin
-      confetti y con el texto "TARDANZA" — no tiene sentido celebrar
-      con la misma fiesta un registro tarde que uno puntual.
-    - Si 'estado' es 'Puntual', sale en cyan/violeta con confetti.
+    POR QUÉ YA NO TIENE SONIDO NI CONFETTI POR JAVASCRIPT (decisión
+    tomada después de varios bugs serios, incluyendo una pantalla que
+    se quedaba completamente negra de forma PERMANENTE): el mecanismo
+    que ejecutaba JavaScript real vía un iframe resultó poco confiable
+    entre navegadores. Esta versión usa render_html() normal (el mismo
+    mecanismo que el fondo animado y los meteoritos, que nunca han
+    fallado) — vive dentro del árbol que Streamlit controla, así que
+    desaparece sola en el siguiente rerun. El "confetti" ahora lo pone
+    st.balloons() nativo de Streamlit (llamarlo aparte, justo después
+    de esta función, solo cuando NO sea tardanza).
+
+    CONECTADO A LA LÓGICA REAL de la app (esto se mantiene igual):
+    - Si 'estado' es 'Tardanza', el sello sale en ámbar/naranja, con el
+      texto "TARDANZA" — no tiene sentido celebrar con la misma fiesta
+      un registro tarde que uno puntual.
+    - Si 'estado' es 'Puntual', sale en cyan/violeta.
     - Si 'racha' (días puntuales seguidos, calculado desde la
       asistencia real) es 2 o más, se agrega una insignia 🔥 con el
-      número — funciona como refuerzo positivo real, no inventado.
-
-    No requiere ningún archivo de audio (los tonos se generan con Web
-    Audio API), y usa canvas-confetti desde CDN para las partículas."""
+      número — funciona como refuerzo positivo real, no inventado."""
     es_tardanza = str(estado).strip().upper() == "TARDANZA"
     color_principal = "#ffab40" if es_tardanza else "#58a6ff"
     color_secundario = "#ff7043" if es_tardanza else "#a371f7"
@@ -544,48 +543,30 @@ def render_animacion_marcado_exitoso(logo_url, hora_texto, estado="Puntual", rac
     mostrar_racha = (not es_tardanza) and racha >= 2
     badge_racha_html = (
         f"""
-        <div id="fac-racha" style="position:absolute; top:-18px; right:-18px;
+        <div style="position:absolute; top:-18px; right:-18px;
             background:linear-gradient(135deg, #ff7043, #ffab40);
             border-radius:24px; padding:7px 16px; font-size:16px;
             font-weight:800; color:#1a1206; box-shadow:0 0 20px rgba(255,171,64,0.7);
-            transform:scale(0); font-family:'Space Grotesk',sans-serif;">
+            font-family:'Space Grotesk',sans-serif;
+            animation:fac-racha-in 0.3s ease 0.55s backwards;">
             🔥 {racha}
         </div>
         """
         if mostrar_racha
         else ""
     )
-    confetti_js = (
-        ""
-        if es_tardanza
-        else """
-        var intentos = 0;
-        var intervalo = setInterval(function(){
-            intentos++;
-            if(window.confetti){
-                clearInterval(intervalo);
-                var canvas = document.getElementById('fac-canvas-confetti');
-                canvas.width = window.innerWidth; canvas.height = window.innerHeight;
-                var miConfetti = confetti.create(canvas, {resize:true});
-                miConfetti({particleCount:130, spread:100, startVelocity:45,
-                    origin:{y:0.5}, colors:['#58a6ff','#a371f7','#79c0ff','#ffffff']});
-            } else if(intentos > 20){
-                clearInterval(intervalo);
-            }
-        }, 100);
-        """
-    )
     html = f"""
-    <div id="fac-capa-sello" style="position:fixed; inset:0; z-index:9998;
+    <div style="position:fixed; inset:0; z-index:9998;
         display:flex; align-items:center; justify-content:center;
-        background:rgba(10,14,26,0.6); pointer-events:none;">
+        background:rgba(10,14,26,0.6); pointer-events:none;
+        animation:fac-desvanecer-sello 0.4s ease 2.2s forwards;">
         <div style="position:relative;">
             {badge_racha_html}
-            <div id="fac-sello" style="width:320px; height:320px; border-radius:50%;
+            <div style="width:320px; height:320px; border-radius:50%;
                 border:12px double {color_principal}; background:{fondo_sello};
                 display:flex; flex-direction:column; align-items:center;
                 justify-content:center; box-shadow:{glow_sombra};
-                transform:scale(3.2) rotate(-25deg); opacity:0;">
+                animation:fac-sello-caida 0.3s cubic-bezier(.2,1.8,.4,1) forwards;">
                 <img src="{logo_url}" style="width:76px; height:76px; object-fit:contain;
                     margin-bottom:10px; filter:drop-shadow(0 0 10px rgba(0,0,0,0.4));"/>
                 <div style="font-size:32px; font-weight:800; color:{color_principal};
@@ -600,63 +581,19 @@ def render_animacion_marcado_exitoso(logo_url, hora_texto, estado="Puntual", rac
             </div>
         </div>
     </div>
-    <canvas id="fac-canvas-confetti" style="position:fixed; inset:0; z-index:9997;
-        pointer-events:none; width:100%; height:100%;"></canvas>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/canvas-confetti/1.9.2/confetti.browser.min.js"></script>
-    <script>
-    (function(){{
-        function tono(freq, dur, delay, tipo){{
-            setTimeout(function(){{
-                try{{
-                    var ctx = new (window.AudioContext||window.webkitAudioContext)();
-                    var o=ctx.createOscillator(), g=ctx.createGain();
-                    o.type = tipo || 'sine'; o.frequency.value=freq;
-                    g.gain.setValueAtTime(0.18, ctx.currentTime);
-                    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime+dur);
-                    o.connect(g); g.connect(ctx.destination);
-                    o.start(); o.stop(ctx.currentTime+dur);
-                }}catch(e){{}}
-            }}, delay);
-        }}
-        var sello = document.getElementById('fac-sello');
-        var racha = document.getElementById('fac-racha');
-        var capa = document.getElementById('fac-capa-sello');
-
-        // Golpe grave de impacto (el "thump" real) + los 2 tonos de siempre
-        tono(70, 0.35, 260, 'sine');
-        tono({660 if not es_tardanza else 520}, 0.08, 260, 'sine');
-        tono({990 if not es_tardanza else 660}, 0.18, 350, 'sine');
-
-        requestAnimationFrame(function(){{
-            sello.style.transition = 'transform 0.28s cubic-bezier(.2,1.8,.4,1), opacity 0.15s ease';
-            sello.style.transform = 'scale(1) rotate(-8deg)';
-            sello.style.opacity = '1';
-        }});
-        // Temblor de pantalla justo cuando el sello "impacta"
-        setTimeout(function(){{
-            document.body.style.transition = 'transform 0.06s ease';
-            var pasos = [[6,-4],[-6,3],[4,-3],[-3,2],[0,0]];
-            var i = 0;
-            var sacudir = setInterval(function(){{
-                if(i >= pasos.length){{ clearInterval(sacudir); return; }}
-                document.body.style.transform = 'translate('+pasos[i][0]+'px,'+pasos[i][1]+'px)';
-                i++;
-            }}, 45);
-        }}, 260);
-        if(racha){{
-            setTimeout(function(){{
-                racha.style.transition = 'transform 0.3s cubic-bezier(.34,1.56,.64,1)';
-                racha.style.transform = 'scale(1)';
-            }}, 560);
-        }}
-        {confetti_js}
-        setTimeout(function(){{
-            capa.style.display = 'none';
-        }}, 2400);
-    }})();
-    </script>
+    <style>
+    @keyframes fac-sello-caida {{
+        from {{ transform:scale(3.2) rotate(-25deg); opacity:0; }}
+        to {{ transform:scale(1) rotate(-8deg); opacity:1; }}
+    }}
+    @keyframes fac-racha-in {{
+        from {{ transform:scale(0); }}
+        to {{ transform:scale(1); }}
+    }}
+    @keyframes fac-desvanecer-sello {{ to {{ opacity:0; visibility:hidden; }} }}
+    </style>
     """
-    render_script(html, limpieza_ms=2700)
+    render_html(html)
 
 
 def calcular_racha_puntualidad(df_asistencia, nombre_empleado):
@@ -803,73 +740,14 @@ ES_CELULAR = MODO_MOVIL or (
     and st.session_state.ancho_pantalla_px < 768
 )
 
-# Enter para confirmar (solo en PC, no en celular): al presionar Enter
-# dentro de un campo de texto/contraseña, se hace clic automáticamente
-# en el botón de confirmación más cercano (PIN, contraseña de
-# marcación, cualquier formulario nuevo que se agregue a futuro) — así
-# no hace falta usar el mouse para confirmar. En celular se deja igual
-# que siempre (no se inyecta nada).
-if not ES_CELULAR:
-    render_script(
-        """
-        <script>
-        (function() {
-            var doc = document;
-            if (doc._facEnterListo) { return; }
-            doc._facEnterListo = true;
-            // FASE DE CAPTURA (el 'true' final): Streamlit tiene su
-            // propio manejador de Enter en cada campo, que dispara su
-            // propio "recargar la página" antes de que nuestro clic
-            // llegue a ejecutarse — eso hacía que "cargara pero no
-            // abriera nada" y hubiera que hacerlo manual. Escuchando en
-            // fase de captura interceptamos el Enter ANTES que
-            // Streamlit, evitamos su recarga con stopPropagation, y
-            // hacemos nosotros mismos el clic en el botón.
-            doc.addEventListener('keydown', function(e) {
-                if (e.key !== 'Enter') { return; }
-                const activo = doc.activeElement;
-                if (!activo || activo.tagName !== 'INPUT') { return; }
-                if (activo.type !== 'password') { return; }
-                let el = activo.closest('[data-testid="stVerticalBlock"]');
-                let intentos = 0;
-                while (el && intentos < 8) {
-                    const botones = el.querySelectorAll('button');
-                    for (const b of botones) {
-                        if (!b.disabled && b.offsetParent !== null) {
-                            // Si hay VARIOS campos de contraseña dentro
-                            // de este mismo bloque (ej. "Cambiar mi
-                            // Contraseña": actual/nueva/confirmar), solo
-                            // se confirma con Enter cuando el foco está
-                            // en el ÚLTIMO de esos campos — si no, el
-                            // usuario todavía está llenando el
-                            // formulario y no queremos enviarlo antes
-                            // de tiempo.
-                            const camposPass = Array.from(
-                                el.querySelectorAll('input[type="password"]')
-                            );
-                            if (camposPass.length > 1) {
-                                const ultimo = camposPass[camposPass.length - 1];
-                                if (activo !== ultimo) { return; }
-                            }
-                            e.preventDefault();
-                            e.stopPropagation();
-                            e.stopImmediatePropagation();
-                            b.click();
-                            return;
-                        }
-                    }
-                    const padre = el.parentElement;
-                    el = padre
-                        ? padre.closest('[data-testid="stVerticalBlock"]')
-                        : null;
-                    intentos++;
-                }
-            }, true);
-        })();
-        </script>
-        """,
-        limpieza_ms=1000,
-    )
+# Enter para confirmar (DESACTIVADO por seguridad): usaba el mismo
+# mecanismo de inyección de script que causó los bugs serios del sello
+# (incluida una pantalla que se quedaba negra permanentemente). Aunque
+# esto en particular no se había reportado roto, usa exactamente el
+# mismo mecanismo riesgoso, así que se prefiere quitarlo antes de que
+# cause un problema silencioso — mejor volver al comportamiento nativo
+# de Streamlit (clic en el botón) hasta encontrar una forma más segura
+# de hacerlo.
 
 # VISTA_TRABAJADOR_MOVIL: además de ser celular, la persona todavía no
 # inició sesión como Admin/SuperAdmin/Developer con PIN. Es la vista
@@ -5615,7 +5493,7 @@ if opcion == "⏰ Marcar Asistencia":
                                 "logo_globos_url", "/app/static/icon-192.png"
                             )
                             render_animacion_verificando(_logo_verif)
-                            _dormir(1.8)
+                            _dormir(1.5)
                             st.rerun()
                         else:
                             st.error(
@@ -5999,9 +5877,10 @@ if opcion == "⏰ Marcar Asistencia":
                         "localmente!"
                     )
 
-                # --- Animación de marcación exitosa: sello + confetti +
-                # sonido, adaptada al estado real (Puntual/Tardanza) y
-                # a la racha real de puntualidad del trabajador ---
+                # --- Animación de marcación exitosa: sello (100% CSS,
+                # confiable) + st.balloons() nativo como celebración,
+                # adaptada al estado real (Puntual/Tardanza) y a la
+                # racha real de puntualidad del trabajador ---
                 _logo_globos = st.session_state.get(
                     "logo_globos_url", "/app/static/icon-192.png"
                 )
@@ -6013,6 +5892,8 @@ if opcion == "⏰ Marcar Asistencia":
                 render_animacion_marcado_exitoso(
                     _logo_globos, hora_str, estado=estado, racha=_racha_actual
                 )
+                if estado == "Puntual":
+                    st.balloons()
 
 elif opcion == "🔐 Panel de Gestión / Admin":
     if not st.session_state.autenticado:
