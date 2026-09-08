@@ -306,7 +306,7 @@ def clave_coincide(valor_ingresado, valor_guardado):
     return str(valor_ingresado) == valor_guardado
 
 
-def render_script(html_body, altura=1):
+def render_script(html_body, altura=0):
     """Renderiza HTML que incluye un <script> REAL que necesita
     ejecutarse en el navegador (sonido, confetti, temblor de pantalla,
     etc.). NUNCA usar render_html()/st.markdown() para esto — los
@@ -320,7 +320,15 @@ def render_script(html_body, altura=1):
     le des, este helper lo expande para cubrir toda la pantalla (con
     pointer-events:none, para no bloquear clics de la página) — así los
     overlays a pantalla completa (el sello, el anillo de verificación)
-    se ven igual que si vivieran en la página principal."""
+    se ven igual que si vivieran en la página principal.
+
+    IMPORTANTE (bug real ya corregido): no basta con hacerle
+    position:fixed al iframe — el CONTENEDOR que Streamlit dibuja
+    alrededor del iframe (un <div> que él mismo agrega, fuera de
+    nuestro control desde adentro del iframe) seguía reservando espacio
+    en el flujo de la página, dejando un hueco vacío grande arriba.
+    Por eso también hay que colapsar ese contenedor padre a 0, no solo
+    el iframe."""
     html_completo = f"""
     <script>
     if (window.frameElement) {{
@@ -331,6 +339,21 @@ def render_script(html_body, altura=1):
         window.frameElement.style.border = 'none';
         window.frameElement.style.zIndex = '999999';
         window.frameElement.style.pointerEvents = 'none';
+
+        // Colapsar el/los contenedores de Streamlit alrededor del
+        // iframe, para que no quede un espacio vacío reservado.
+        var envoltorio = window.frameElement.parentElement;
+        var saltos = 0;
+        while (envoltorio && saltos < 4) {{
+            envoltorio.style.height = '0px';
+            envoltorio.style.minHeight = '0px';
+            envoltorio.style.maxHeight = '0px';
+            envoltorio.style.margin = '0px';
+            envoltorio.style.padding = '0px';
+            envoltorio.style.overflow = 'visible';
+            envoltorio = envoltorio.parentElement;
+            saltos++;
+        }}
     }}
     </script>
     {html_body}
@@ -1739,6 +1762,8 @@ def cargar_configuracion_sistema(supabase, empresa_id):
             st.session_state.regimen_laboral = (
                 cfg.get("regimen_laboral") or "GENERAL"
             )
+            if cfg.get("logo_globos_url"):
+                st.session_state.logo_globos_url = cfg["logo_globos_url"]
     except Exception:
         pass  # si falla, se sigue usando lo que ya había cargado
 
@@ -3739,20 +3764,36 @@ if not VISTA_TRABAJADOR_MOVIL:
                 st.session_state.empresa_id = empresas_filtradas.iloc[0]["empresa_id"]
             st.rerun()
 
-        # Personalización de la animación de "globos" al marcar asistencia
-        # (solo visible para el Developer con el entorno DEV desbloqueado).
+        # Personalización del logo para las animaciones (sello,
+        # verificación, meteoritos). Se guarda en Supabase para que
+        # aplique a TODOS los dispositivos y sesiones, no solo a la que
+        # lo configura (antes solo vivía en esta sesión del navegador).
         with st.sidebar.expander("🏅 Animación de éxito (solo dev)"):
-            st.session_state.logo_globos_url = st.text_input(
-                "URL del logo para el sello y la verificación:",
+            _logo_nuevo = st.text_input(
+                "URL del logo para el sello, verificación y meteoritos:",
                 value=st.session_state.get(
                     "logo_globos_url", "/app/static/icon-192.png"
                 ),
                 help=(
                     "Se usa en el sello que aparece al confirmar una"
-                    " marcación, y en el anillo de verificación al"
-                    " iniciar sesión. Por defecto es el ícono de la app."
+                    " marcación, en el anillo de verificación al iniciar"
+                    " sesión, y en los meteoritos de fondo. Por defecto"
+                    " es el ícono de la app. Se guarda para TODOS los"
+                    " dispositivos, no solo este."
                 ),
             )
+            if _logo_nuevo != st.session_state.get("logo_globos_url", ""):
+                st.session_state.logo_globos_url = _logo_nuevo
+                if supabase:
+                    try:
+                        guardar_configuracion_sistema(
+                            supabase,
+                            st.session_state.empresa_id,
+                            logo_globos_url=_logo_nuevo,
+                        )
+                        st.success("✅ Logo actualizado para todos.")
+                    except Exception as e:
+                        st.warning(f"No se pudo guardar en la nube ({e}).")
 
         # Indicador de estado del Nivel 1 (detección de rostro). Solo
         # visible aquí, con el entorno DEV desbloqueado, para que el
