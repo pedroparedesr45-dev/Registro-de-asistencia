@@ -329,6 +329,18 @@ def render_script(html_body, altura=0):
     import json
 
     html_json = json.dumps(html_body)
+    # BUG CLÁSICO DE HTML (ya corregido): si el HTML que se inyecta
+    # incluye su propio "<script ...>...</script>" (ej. el de
+    # canvas-confetti), el navegador corta el <script> EXTERIOR justo
+    # ahí — el parser de HTML busca la secuencia "</script>" a lo bruto,
+    # sin importarle que esté metida dentro de un string de JS. Todo lo
+    # que seguía después quedaba como texto suelto, visible en la
+    # página (y los <div> de limpieza nunca llegaban a insertarse bien,
+    # dejando overlays a medio armar interfiriendo con el scroll). Se
+    # arregla partiendo la secuencia "</script>" con una barra invertida
+    # (que en JS no cambia el string real, pero rompe la coincidencia
+    # para el parser de HTML).
+    html_json = html_json.replace("</script>", "<\\/script>")
     html_completo = f"""
     <script>
     (function(){{
