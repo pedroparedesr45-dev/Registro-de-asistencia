@@ -422,33 +422,91 @@ def render_animacion_verificando(logo_url):
     render_html(html)
 
 
-def render_animacion_marcado_exitoso(logo_url, hora_texto):
+def render_animacion_marcado_exitoso(logo_url, hora_texto, estado="Puntual", racha=0):
     """Reemplaza la antigua animación de 'globos': un sello con el logo
-    de la empresa cae con rebote elástico + doble beep tipo 'thump' +
-    confetti cyan/violeta detrás — todo se desvanece solo en ~2.2 seg.
+    de la empresa cae con rebote elástico + sonido tipo 'thump'.
+
+    CONECTADO A LA LÓGICA REAL de la app (no es solo decorativo):
+    - Si 'estado' es 'Tardanza', el sello sale en ámbar/naranja, sin
+      confetti y con el texto "TARDANZA" — no tiene sentido celebrar
+      con la misma fiesta un registro tarde que uno puntual.
+    - Si 'estado' es 'Puntual', sale en cyan/violeta con confetti.
+    - Si 'racha' (días puntuales seguidos, calculado desde la
+      asistencia real) es 2 o más, se agrega una insignia 🔥 con el
+      número — funciona como refuerzo positivo real, no inventado.
+
     No requiere ningún archivo de audio (los tonos se generan con Web
     Audio API), y usa canvas-confetti desde CDN para las partículas."""
+    es_tardanza = str(estado).strip().upper() == "TARDANZA"
+    color_principal = "#ffab40" if es_tardanza else "#58a6ff"
+    color_secundario = "#ff7043" if es_tardanza else "#a371f7"
+    texto_sello = "TARDANZA" if es_tardanza else "MARCADO"
+    glow_sombra = (
+        "0 0 40px rgba(255,171,64,0.55), 0 0 80px rgba(255,112,67,0.25)"
+        if es_tardanza
+        else "0 0 40px rgba(88,166,255,0.6), 0 0 80px rgba(163,113,247,0.3)"
+    )
+    fondo_sello = (
+        "radial-gradient(circle, rgba(255,171,64,0.18), rgba(255,112,67,0.10))"
+        if es_tardanza
+        else "radial-gradient(circle, rgba(88,166,255,0.18), rgba(163,113,247,0.10))"
+    )
+    mostrar_racha = (not es_tardanza) and racha >= 2
+    badge_racha_html = (
+        f"""
+        <div id="fac-racha" style="position:absolute; top:-14px; right:-14px;
+            background:linear-gradient(135deg, #ff7043, #ffab40);
+            border-radius:20px; padding:5px 12px; font-size:13px;
+            font-weight:700; color:#1a1206; box-shadow:0 0 16px rgba(255,171,64,0.6);
+            transform:scale(0); font-family:'Space Grotesk',sans-serif;">
+            🔥 {racha}
+        </div>
+        """
+        if mostrar_racha
+        else ""
+    )
+    confetti_js = (
+        ""
+        if es_tardanza
+        else """
+        var intentos = 0;
+        var intervalo = setInterval(function(){
+            intentos++;
+            if(window.confetti){
+                clearInterval(intervalo);
+                var canvas = document.getElementById('fac-canvas-confetti');
+                canvas.width = window.innerWidth; canvas.height = window.innerHeight;
+                var miConfetti = confetti.create(canvas, {resize:true});
+                miConfetti({particleCount:70, spread:80, origin:{y:0.5},
+                    colors:['#58a6ff','#a371f7','#79c0ff']});
+            } else if(intentos > 20){
+                clearInterval(intervalo);
+            }
+        }, 100);
+        """
+    )
     html = f"""
     <div id="fac-capa-sello" style="position:fixed; inset:0; z-index:9998;
         display:flex; align-items:center; justify-content:center;
         background:rgba(10,14,26,0.5); pointer-events:none;">
-        <div id="fac-sello" style="width:220px; height:220px; border-radius:50%;
-            border:6px solid #58a6ff; background:radial-gradient(circle,
-            rgba(88,166,255,0.18), rgba(163,113,247,0.10));
-            display:flex; flex-direction:column; align-items:center;
-            justify-content:center; box-shadow:0 0 40px rgba(88,166,255,0.6),
-            0 0 80px rgba(163,113,247,0.3); transform:scale(2.2) rotate(-18deg);
-            opacity:0;">
-            <img src="{logo_url}" style="width:44px; height:44px; object-fit:contain;
-                border-radius:50%; background:rgba(255,255,255,0.9);
-                margin-bottom:8px;"/>
-            <div style="font-size:22px; font-weight:700; color:#58a6ff;
-                letter-spacing:1px; font-family:'Space Grotesk',sans-serif;">
-                MARCADO
-            </div>
-            <div style="font-size:12px; color:#a371f7; margin-top:2px;
-                font-family:'Space Grotesk',sans-serif;">
-                {hora_texto} ✓
+        <div style="position:relative;">
+            {badge_racha_html}
+            <div id="fac-sello" style="width:220px; height:220px; border-radius:50%;
+                border:6px solid {color_principal}; background:{fondo_sello};
+                display:flex; flex-direction:column; align-items:center;
+                justify-content:center; box-shadow:{glow_sombra};
+                transform:scale(2.2) rotate(-18deg); opacity:0;">
+                <img src="{logo_url}" style="width:44px; height:44px; object-fit:contain;
+                    border-radius:50%; background:rgba(255,255,255,0.9);
+                    margin-bottom:8px;"/>
+                <div style="font-size:22px; font-weight:700; color:{color_principal};
+                    letter-spacing:1px; font-family:'Space Grotesk',sans-serif;">
+                    {texto_sello}
+                </div>
+                <div style="font-size:12px; color:{color_secundario}; margin-top:2px;
+                    font-family:'Space Grotesk',sans-serif;">
+                    {hora_texto} ✓
+                </div>
             </div>
         </div>
     </div>
@@ -471,28 +529,22 @@ def render_animacion_marcado_exitoso(logo_url, hora_texto):
             }}, delay);
         }}
         var sello = document.getElementById('fac-sello');
+        var racha = document.getElementById('fac-racha');
         var capa = document.getElementById('fac-capa-sello');
-        tono(660, 0.08, 0);
-        tono(990, 0.18, 90);
+        tono({660 if not es_tardanza else 520}, 0.08, 0);
+        tono({990 if not es_tardanza else 660}, 0.18, 90);
         requestAnimationFrame(function(){{
             sello.style.transition = 'transform 0.35s cubic-bezier(.34,1.56,.64,1), opacity 0.2s ease';
             sello.style.transform = 'scale(1) rotate(-8deg)';
             sello.style.opacity = '1';
         }});
-        var intentos = 0;
-        var intervalo = setInterval(function(){{
-            intentos++;
-            if(window.confetti){{
-                clearInterval(intervalo);
-                var canvas = document.getElementById('fac-canvas-confetti');
-                canvas.width = window.innerWidth; canvas.height = window.innerHeight;
-                var miConfetti = confetti.create(canvas, {{resize:true}});
-                miConfetti({{particleCount:70, spread:80, origin:{{y:0.5}},
-                    colors:['#58a6ff','#a371f7','#79c0ff']}});
-            }} else if(intentos > 20){{
-                clearInterval(intervalo);
-            }}
-        }}, 100);
+        if(racha){{
+            setTimeout(function(){{
+                racha.style.transition = 'transform 0.3s cubic-bezier(.34,1.56,.64,1)';
+                racha.style.transform = 'scale(1)';
+            }}, 380);
+        }}
+        {confetti_js}
         setTimeout(function(){{
             capa.style.display = 'none';
         }}, 2200);
@@ -500,6 +552,26 @@ def render_animacion_marcado_exitoso(logo_url, hora_texto):
     </script>
     """
     render_html(html)
+
+
+def calcular_racha_puntualidad(df_asistencia, nombre_empleado):
+    """Cuenta cuántos días PUNTUALES seguidos lleva el trabajador en sus
+    marcaciones de Entrada, contando hacia atrás desde la más reciente
+    hasta la primera Tardanza (o hasta que se acaben los datos). Se usa
+    para la insignia 🔥 del sello — es un dato real, no inventado."""
+    if df_asistencia is None or df_asistencia.empty:
+        return 0
+    entradas = df_asistencia[
+        (df_asistencia["Empleado"] == nombre_empleado)
+        & (df_asistencia["Tipo Marcación"] == "Entrada")
+    ].sort_values("Fecha", ascending=False)
+    racha = 0
+    for _, fila in entradas.iterrows():
+        if str(fila.get("Estado", "")).strip() == "Puntual":
+            racha += 1
+        else:
+            break
+    return racha
 
 
 def render_gate_consentimiento(supabase, datos_emp):
@@ -5210,6 +5282,48 @@ else:
         st.rerun()
 
 if opcion == "⏰ Marcar Asistencia":
+    _logo_meteoros = st.session_state.get(
+        "logo_globos_url", "/app/static/icon-192.png"
+    )
+    _html_meteoros = (
+        '<div style="position:fixed; inset:0; z-index:-1; overflow:hidden;'
+        ' pointer-events:none;">'
+    )
+    for _m in range(5):
+        _top_ini = random.randint(-10, 40)
+        _left_ini = random.randint(60, 130)
+        _delay_m = round(random.uniform(0, 9), 2)
+        _dur_m = round(random.uniform(6, 10), 2)
+        _tam = random.randint(20, 34)
+        _html_meteoros += f"""
+        <div style="position:absolute; top:{_top_ini}%; left:{_left_ini}%;
+            width:{_tam}px; height:{_tam}px;
+            animation:fac-meteoro {_dur_m}s linear {_delay_m}s infinite;">
+            <div style="position:absolute; right:100%; top:50%;
+                width:90px; height:2px; transform:translateY(-50%);
+                background:linear-gradient(90deg, transparent,
+                rgba(88,166,255,0.5));"></div>
+            <img src="{_logo_meteoros}" style="width:100%; height:100%;
+                object-fit:contain; border-radius:50%; opacity:0.55;
+                filter:drop-shadow(0 0 6px rgba(88,166,255,0.6));"/>
+        </div>
+        """
+    _html_meteoros += """
+    </div>
+    <style>
+    @keyframes fac-meteoro{
+        0%{ transform:translate(0,0); opacity:0; }
+        6%{ opacity:0.6; }
+        94%{ opacity:0.5; }
+        100%{ transform:translate(-160vw, 160vh); opacity:0; }
+    }
+    @media (prefers-reduced-motion: reduce){
+        [style*="fac-meteoro"]{ animation:none !important; }
+    }
+    </style>
+    """
+    render_html(_html_meteoros)
+
     render_html(
         f"""
         <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
@@ -5753,11 +5867,19 @@ if opcion == "⏰ Marcar Asistencia":
                     )
 
                 # --- Animación de marcación exitosa: sello + confetti +
-                # sonido (reemplaza la antigua animación de "globos") ---
+                # sonido, adaptada al estado real (Puntual/Tardanza) y
+                # a la racha real de puntualidad del trabajador ---
                 _logo_globos = st.session_state.get(
                     "logo_globos_url", "/app/static/icon-192.png"
                 )
-                render_animacion_marcado_exitoso(_logo_globos, hora_str)
+                _racha_actual = 0
+                if tipo_marcacion == "Entrada" and estado == "Puntual":
+                    _racha_actual = 1 + calcular_racha_puntualidad(
+                        df_asistencia, datos_emp["nombre"]
+                    )
+                render_animacion_marcado_exitoso(
+                    _logo_globos, hora_str, estado=estado, racha=_racha_actual
+                )
 
 elif opcion == "🔐 Panel de Gestión / Admin":
     if not st.session_state.autenticado:
