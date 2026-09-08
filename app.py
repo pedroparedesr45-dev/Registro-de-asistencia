@@ -306,75 +306,46 @@ def clave_coincide(valor_ingresado, valor_guardado):
     return str(valor_ingresado) == valor_guardado
 
 
-def render_script(html_body, altura=0, limpieza_ms=2500):
-    """Renderiza HTML que incluye un <script> REAL que necesita
-    ejecutarse en el navegador (sonido, confetti, temblor de pantalla,
-    etc.). NUNCA usar render_html()/st.markdown() para esto — los
-    navegadores no ejecutan <script> insertado por innerHTML, sin
-    importar qué tan "permisivo" sea el modo de Streamlit; es una regla
-    del navegador, no de Streamlit.
+def render_sonido(tonos):
+    """Reproduce un sonido corto generado con Web Audio API — sin
+    archivos de audio, sin librerías externas.
 
-    CÓMO FUNCIONA: el iframe de Streamlit se usa solo como un
-    "vehículo" invisible para poder ejecutar JavaScript — el contenido
-    real se inyecta DIRECTO en la página principal
-    (window.parent.document), no dentro del iframe. Así el
-    `position:fixed` de los overlays funciona contra la pantalla real.
+    POR QUÉ ESTO SÍ ES SEGURO (a diferencia del intento anterior que
+    rompía la página): el sonido no necesita verse en ningún lado, así
+    que no hace falta inyectar nada en la página principal, ni estirar
+    un iframe a pantalla completa, ni limpiar overlays después — el
+    iframe minúsculo e invisible que usa `st.components.v1.html()`
+    simplemente vive y muere con el ciclo normal de Streamlit (se
+    reemplaza solo en el siguiente rerun, como cualquier otro
+    elemento), sin dejar nada pegado en pantalla. Todo lo que causaba
+    los bugs anteriores (temblor de pantalla, confetti por JS, inyectar
+    HTML en window.parent.document) queda fuera — esto es solo sonido.
 
-    IMPORTANTE (bug real ya corregido, "se quedaba pegado en pantalla"):
-    Streamlit NO recarga la página del navegador en cada rerun — es una
-    app de una sola página, el DOM del navegador sigue vivo entre
-    reruns. Lo que se inyecta aquí queda FUERA del árbol que Streamlit
-    controla, así que si el 'limpieza_ms' es más largo que el tiempo
-    que Python espera antes de hacer st.rerun(), el overlay se queda
-    visible tapando la pantalla siguiente. Por eso cada animación debe
-    pasar su propia duración real (no un valor genérico), y además se
-    quita cualquier overlay anterior con la misma etiqueta ANTES de
-    poner uno nuevo, por si dos quedaron superpuestos."""
-    import json
-
-    html_json = json.dumps(html_body)
-    # BUG CLÁSICO DE HTML (ya corregido): si el HTML que se inyecta
-    # incluye su propio "<script ...>...</script>" (ej. el de
-    # canvas-confetti), el navegador corta el <script> EXTERIOR justo
-    # ahí — el parser de HTML busca la secuencia "</script>" a lo bruto,
-    # sin importarle que esté metida dentro de un string de JS. Todo lo
-    # que seguía después quedaba como texto suelto, visible en la
-    # página. Se arregla partiendo la secuencia "</script>" con una
-    # barra invertida (que en JS no cambia el string real, pero rompe
-    # la coincidencia para el parser de HTML).
-    html_json = html_json.replace("</script>", "<\\/script>")
-    html_completo = f"""
+    'tonos' es una lista de tuplas (frecuencia_hz, duración_seg,
+    retraso_ms), ej. [(660, 0.12, 0), (880, 0.18, 100)]."""
+    lineas_tonos = []
+    for freq, dur, delay in tonos:
+        lineas_tonos.append(f"""
+        setTimeout(function(){{
+            try{{
+                var ctx = new (window.AudioContext||window.webkitAudioContext)();
+                var o = ctx.createOscillator(), g = ctx.createGain();
+                o.type = 'sine'; o.frequency.value = {freq};
+                g.gain.setValueAtTime(0.15, ctx.currentTime);
+                g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + {dur});
+                o.connect(g); g.connect(ctx.destination);
+                o.start(); o.stop(ctx.currentTime + {dur});
+            }}catch(e){{}}
+        }}, {delay});
+        """)
+    html = f"""
     <script>
     (function(){{
-        var doc = window.parent.document;
-        // Por seguridad, quita cualquier overlay anterior nuestro que
-        // se haya quedado pegado (de un rerun anterior demasiado
-        // rápido) antes de poner el nuevo.
-        var viejos = doc.querySelectorAll('.fac-overlay-animacion');
-        viejos.forEach(function(v){{ if (v.parentNode) v.parentNode.removeChild(v); }});
-
-        var contenedor = doc.createElement('div');
-        contenedor.className = 'fac-overlay-animacion';
-        contenedor.innerHTML = {html_json};
-        doc.body.appendChild(contenedor);
-        // Los <script> insertados por innerHTML NO se ejecutan solos —
-        // hay que recrearlos a mano para que el navegador sí los corra.
-        var scriptsViejos = contenedor.querySelectorAll('script');
-        scriptsViejos.forEach(function(viejo){{
-            var nuevo = doc.createElement('script');
-            if (viejo.src) {{ nuevo.src = viejo.src; }}
-            else {{ nuevo.textContent = viejo.textContent; }}
-            doc.body.appendChild(nuevo);
-        }});
-        setTimeout(function(){{
-            if (contenedor.parentNode) {{
-                contenedor.parentNode.removeChild(contenedor);
-            }}
-        }}, {limpieza_ms});
+        {''.join(lineas_tonos)}
     }})();
     </script>
     """
-    components.html(html_completo, height=altura)
+    components.html(html, height=0)
 
 
 def render_html(html):
@@ -439,7 +410,8 @@ ubicación GPS con la única finalidad descrita.
 
 
 def render_animacion_verificando(logo_url):
-    """Animación corta (100% CSS, sin JavaScript) que se muestra justo
+    """Animación corta (visual 100% CSS + sonido aparte, seguro) que se
+    muestra justo
     después de un login exitoso, antes de pasar a la pantalla de
     consentimiento o de marcar — un anillo con degradado cyan-violeta
     que se dibuja solo alrededor del logo de la empresa.
@@ -499,10 +471,12 @@ def render_animacion_verificando(logo_url):
     </style>
     """
     render_html(html)
+    render_sonido([(660, 0.12, 850), (880, 0.18, 950)])
 
 
 def render_animacion_marcado_exitoso(logo_url, hora_texto, estado="Puntual", racha=0):
-    """Sello grande y dramático (100% CSS, sin JavaScript ni sonido) —
+    """Sello grande y dramático (visual 100% CSS + sonido aparte,
+    seguro) —
     cae con rebote elástico y se desvanece solo.
 
     POR QUÉ YA NO TIENE SONIDO NI CONFETTI POR JAVASCRIPT (decisión
@@ -594,6 +568,11 @@ def render_animacion_marcado_exitoso(logo_url, hora_texto, estado="Puntual", rac
     </style>
     """
     render_html(html)
+    render_sonido([
+        (70, 0.35, 260),
+        (660 if not es_tardanza else 520, 0.08, 260),
+        (990 if not es_tardanza else 660, 0.18, 350),
+    ])
 
 
 def calcular_racha_puntualidad(df_asistencia, nombre_empleado):
