@@ -322,13 +322,11 @@ def render_script(html_body, altura=0):
     overlays a pantalla completa (el sello, el anillo de verificación)
     se ven igual que si vivieran en la página principal.
 
-    IMPORTANTE (bug real ya corregido): no basta con hacerle
-    position:fixed al iframe — el CONTENEDOR que Streamlit dibuja
-    alrededor del iframe (un <div> que él mismo agrega, fuera de
-    nuestro control desde adentro del iframe) seguía reservando espacio
-    en el flujo de la página, dejando un hueco vacío grande arriba.
-    Por eso también hay que colapsar ese contenedor padre a 0, no solo
-    el iframe."""
+    NOTA: solo se toca el iframe y su contenedor INMEDIATO (1 solo
+    nivel) — un intento anterior subía 4 niveles de contenedores
+    padres, y eso rompía el layout de otras partes de la página (esos
+    contenedores más arriba no son exclusivos de este iframe, también
+    envuelven contenido vecino)."""
     html_completo = f"""
     <script>
     if (window.frameElement) {{
@@ -340,19 +338,12 @@ def render_script(html_body, altura=0):
         window.frameElement.style.zIndex = '999999';
         window.frameElement.style.pointerEvents = 'none';
 
-        // Colapsar el/los contenedores de Streamlit alrededor del
-        // iframe, para que no quede un espacio vacío reservado.
+        // Solo el contenedor INMEDIATO (exclusivo de este iframe).
         var envoltorio = window.frameElement.parentElement;
-        var saltos = 0;
-        while (envoltorio && saltos < 4) {{
+        if (envoltorio) {{
             envoltorio.style.height = '0px';
             envoltorio.style.minHeight = '0px';
-            envoltorio.style.maxHeight = '0px';
             envoltorio.style.margin = '0px';
-            envoltorio.style.padding = '0px';
-            envoltorio.style.overflow = 'visible';
-            envoltorio = envoltorio.parentElement;
-            saltos++;
         }}
     }}
     </script>
