@@ -681,7 +681,15 @@ def calcular_dias_falta_automatico(df_asistencia, nombre_empleado, mes_sel, anio
             (df_asistencia["Empleado"] == nombre_empleado)
             & (df_asistencia["Tipo Marcación"] == "Entrada")
         ]
-        fechas_con_entrada = set(emp_asist["Fecha"].astype(str))
+        # CORREGIDO: si la fecha viene con hora incluida (ej.
+        # "2026-09-05 00:00:00" en vez de "2026-09-05" — pasa cuando
+        # Supabase devuelve un timestamp real en vez de solo texto), la
+        # comparación exacta nunca coincidía y contaba TODOS los días
+        # como falta. Se usan solo los primeros 10 caracteres
+        # ("AAAA-MM-DD") de cada fecha, sin importar qué venga después.
+        fechas_con_entrada = set(
+            emp_asist["Fecha"].astype(str).str[:10]
+        )
 
     dias_falta = 0
     for dia in range(1, ultimo_dia_a_contar + 1):
