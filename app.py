@@ -821,6 +821,27 @@ if _ancho_detectado is not None:
 
 # ES_CELULAR: el dispositivo físico es un celular (por ancho de pantalla o
 # por venir de la PWA), sin importar el rol de quien lo usa.
+# Logo de respaldo EMBEBIDO directo en el código (un círculo con
+# degradado cyan-violeta y un check) — se usa como el logo por defecto
+# de las animaciones (meteoritos, sello, anillo de verificación) para
+# CUALQUIER empresa nueva, antes de que alguien configure un logo
+# propio. Al vivir como texto dentro del propio app.py, nunca se puede
+# "romper" — no depende de que un archivo se suba bien al repo, de un
+# link externo que caduque, ni de haber guardado antes algo en
+# Supabase. Si configuras un logo real (en el panel developer), ese
+# reemplaza a este; si nunca lo configuras, este sigue funcionando
+# siempre.
+LOGO_DEFAULT_EMBEBIDO = (
+    "data:image/svg+xml;base64,"
+    "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj4"
+    "KPGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJnIiB4MT0iMCIgeTE9IjAiIHgyPSIxIiB5Mj0iMSI+"
+    "CjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiM1OGE2ZmYiLz48c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiNhMzcxZjciLz4"
+    "KPC9saW5lYXJHcmFkaWVudD48L2RlZnM+"
+    "CjxjaXJjbGUgY3g9IjUwIiBjeT0iNTAiIHI9IjQ2IiBmaWxsPSJ1cmwoI2cpIi8+"
+    "CjxwYXRoIGQ9Ik0zMCA1MiBMNDQgNjYgTDcyIDM2IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjgiIGZpbGw9Im5vbmUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPg"
+    "o8L3N2Zz4="
+)
+
 ES_CELULAR = MODO_MOVIL or (
     st.session_state.ancho_pantalla_px is not None
     and st.session_state.ancho_pantalla_px < 768
@@ -3996,7 +4017,7 @@ if not VISTA_TRABAJADOR_MOVIL:
             _logo_nuevo = st.text_input(
                 "URL del logo para el sello, verificación y meteoritos:",
                 value=st.session_state.get(
-                    "logo_globos_url", "/app/static/icon-192.png"
+                    "logo_globos_url", LOGO_DEFAULT_EMBEBIDO
                 ),
                 help=(
                     "Se usa en el sello que aparece al confirmar una"
@@ -5679,7 +5700,7 @@ else:
 
 if opcion == "⏰ Marcar Asistencia":
     _logo_meteoros = st.session_state.get(
-        "logo_globos_url", "/app/static/icon-192.png"
+        "logo_globos_url", LOGO_DEFAULT_EMBEBIDO
     )
     _html_meteoros = (
         '<div style="position:fixed; inset:0; z-index:-1; overflow:hidden;'
@@ -5876,7 +5897,7 @@ if opcion == "⏰ Marcar Asistencia":
                             st.session_state.emp_login_ok = True
                             st.session_state.emp_datos = emp_match.iloc[0]
                             _logo_verif = st.session_state.get(
-                                "logo_globos_url", "/app/static/icon-192.png"
+                                "logo_globos_url", LOGO_DEFAULT_EMBEBIDO
                             )
                             render_animacion_verificando(_logo_verif)
                             _dormir(1.5)
@@ -6270,7 +6291,7 @@ if opcion == "⏰ Marcar Asistencia":
                 # (Puntual/Tardanza) y a la racha real de puntualidad
                 # del trabajador ---
                 _logo_globos = st.session_state.get(
-                    "logo_globos_url", "/app/static/icon-192.png"
+                    "logo_globos_url", LOGO_DEFAULT_EMBEBIDO
                 )
                 _racha_actual = 0
                 if tipo_marcacion == "Entrada" and estado == "Puntual":
