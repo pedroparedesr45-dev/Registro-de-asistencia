@@ -22,6 +22,7 @@ import numpy as np
 import openpyxl
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 from openpyxl.drawing.image import Image as OpenPyxlImage
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
@@ -647,14 +648,65 @@ def calcular_racha_puntualidad(df_asistencia, nombre_empleado):
     return racha
 
 
+def calcular_planilla_todos_los_empleados(
+    df_empleados, df_asistencia, supabase, empresa_id, mes_sel, anio_sel,
+    permitir_horas_extra, regimen_laboral,
+):
+    """Calcula la planilla del período para TODOS los trabajadores de
+    una sola vez (mismo motor de cálculo que usa el Excel) — se usa
+    para el gráfico de 'Panorama General', que muestra a todos juntos
+    en vez de tener que revisarlos uno por uno."""
+    prefix_periodo = f"{anio_sel}-{mes_sel:02d}"
+    resultados = []
+    for _, emp in df_empleados.sort_values("nombre").iterrows():
+        dni = str(emp["dni"])
+        periodo_bd = cargar_planilla_periodo_supabase(
+            supabase, empresa_id, dni, prefix_periodo
+        ) or {}
+        emp_asist = df_asistencia[df_asistencia["Empleado"] == emp["nombre"]]
+        emp_asist_mes = (
+            emp_asist[
+                emp_asist["Fecha"].astype(str).str.startswith(prefix_periodo)
+            ]
+            if not emp_asist.empty else pd.DataFrame()
+        )
+        tardanzas_dias = (
+            emp_asist_mes[emp_asist_mes["Estado"] == "Tardanza"]["Fecha"].nunique()
+            if not emp_asist_mes.empty else 0
+        )
+        puntuales = (
+            emp_asist_mes[emp_asist_mes["Estado"] == "Puntual"]["Fecha"].nunique()
+            if not emp_asist_mes.empty else 0
+        )
+        min_tardanza = int(emp_asist_mes["Minutos Tardanza"].sum()) if not emp_asist_mes.empty else 0
+        min_extra_dia = (
+            emp_asist_mes.groupby("Fecha")["Horas Extra (min)"].sum().tolist()
+            if not emp_asist_mes.empty else []
+        )
+        calc = calcular_planilla_trabajador(
+            emp, puntuales + tardanzas_dias, min_tardanza, min_extra_dia,
+            periodo_bd, mes_sel, anio_sel, permitir_horas_extra, regimen_laboral,
+        )
+        calc["nombre"] = emp["nombre"]
+        calc["dni"] = dni
+        resultados.append(calc)
+    return resultados
+
+
 def calcular_dias_falta_automatico(df_asistencia, nombre_empleado, mes_sel, anio_sel):
     """Cuenta automáticamente los DÍAS DE FALTA del período: días
     laborables (según los 'Días Laborables' configurados para la
-    empresa — por defecto Lunes a Sábado) que ya transcurrieron y NO
-    tienen ninguna marcación de Entrada. Se usa como sugerencia
-    automática para el campo 'Días de Falta' — sigue siendo editable
-    por si un trabajador puntual tiene un horario distinto al general
-    de la empresa (ej. solo trabaja 3 días a la semana)."""
+    empresa) que ya transcurrieron, no son feriado oficial, y no
+    tienen NINGUNA marcación ese día. Se usa como sugerencia automática
+    para el campo 'Días de Falta' — sigue siendo editable.
+
+    IMPORTANTE: usa exactamente la misma lógica ya probada del gráfico
+    "Comportamiento Diario de Asistencia" del Dashboard (mismo criterio
+    de qué cuenta como falta: excluye feriados oficiales, y considera
+    que el día SÍ se trabajó si hay cualquier marcación — no solo
+    Entrada) — así los dos lugares de la app siempre coinciden en el
+    mismo número, en vez de tener 2 cálculos distintos que podían dar
+    resultados diferentes entre sí (bug real ya corregido)."""
     hoy = hoy_peru()
     ultimo_dia_mes = calendar.monthrange(anio_sel, mes_sel)[1]
     if (anio_sel, mes_sel) > (hoy.year, hoy.month):
@@ -670,34 +722,26 @@ def calcular_dias_falta_automatico(df_asistencia, nombre_empleado, mes_sel, anio
         "dias_laborables",
         ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"],
     )
-    DIAS_SEMANA_ES = [
-        "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado",
-        "Domingo",
-    ]
 
-    fechas_con_entrada = set()
+    fechas_con_marcacion = set()
     if df_asistencia is not None and not df_asistencia.empty:
-        emp_asist = df_asistencia[
-            (df_asistencia["Empleado"] == nombre_empleado)
-            & (df_asistencia["Tipo Marcación"] == "Entrada")
-        ]
-        # CORREGIDO: si la fecha viene con hora incluida (ej.
-        # "2026-09-05 00:00:00" en vez de "2026-09-05" — pasa cuando
-        # Supabase devuelve un timestamp real en vez de solo texto), la
-        # comparación exacta nunca coincidía y contaba TODOS los días
-        # como falta. Se usan solo los primeros 10 caracteres
-        # ("AAAA-MM-DD") de cada fecha, sin importar qué venga después.
-        fechas_con_entrada = set(
-            emp_asist["Fecha"].astype(str).str[:10]
-        )
+        emp_asist = df_asistencia[df_asistencia["Empleado"] == nombre_empleado]
+        # Igual que el Dashboard: cuenta CUALQUIER marcación ese día
+        # (Entrada o Salida), no solo Entrada — y se compara tal cual
+        # viene la fecha (sin recortar ni transformar), igual que la
+        # comparación ya probada del Dashboard.
+        fechas_con_marcacion = set(emp_asist["Fecha"])
 
     dias_falta = 0
     for dia in range(1, ultimo_dia_a_contar + 1):
         fecha_actual = date(anio_sel, mes_sel, dia)
-        nombre_dia = DIAS_SEMANA_ES[fecha_actual.weekday()]
+        fecha_str = fecha_actual.strftime("%Y-%m-%d")
+        nombre_dia = DIAS_SEMANA_MAP[fecha_actual.weekday()]
+        if fecha_str in FERIADOS_OFICIALES:
+            continue  # feriado oficial: no cuenta como falta
         if nombre_dia not in dias_laborables_empresa:
             continue  # no era un día laborable para esta empresa
-        if fecha_actual.strftime("%Y-%m-%d") not in fechas_con_entrada:
+        if fecha_str not in fechas_con_marcacion:
             dias_falta += 1
     return dias_falta
 
@@ -821,25 +865,15 @@ if _ancho_detectado is not None:
 
 # ES_CELULAR: el dispositivo físico es un celular (por ancho de pantalla o
 # por venir de la PWA), sin importar el rol de quien lo usa.
-# Logo de respaldo EMBEBIDO directo en el código (un círculo con
-# degradado cyan-violeta y un check) — se usa como el logo por defecto
-# de las animaciones (meteoritos, sello, anillo de verificación) para
-# CUALQUIER empresa nueva, antes de que alguien configure un logo
-# propio. Al vivir como texto dentro del propio app.py, nunca se puede
-# "romper" — no depende de que un archivo se suba bien al repo, de un
-# link externo que caduque, ni de haber guardado antes algo en
-# Supabase. Si configuras un logo real (en el panel developer), ese
-# reemplaza a este; si nunca lo configuras, este sigue funcionando
-# siempre.
+# Logo por defecto de las animaciones (meteoritos, sello, anillo de
+# verificación) — puesto directo en el código a pedido tuyo, para que
+# no dependa de subir un archivo al repo ni de configurar nada en
+# Supabase antes de dar de alta una empresa nueva. Si más adelante
+# configuras un logo distinto desde el panel developer, ese reemplaza
+# a este; si nunca lo configuras, este es el que se usa siempre.
 LOGO_DEFAULT_EMBEBIDO = (
-    "data:image/svg+xml;base64,"
-    "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj4"
-    "KPGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJnIiB4MT0iMCIgeTE9IjAiIHgyPSIxIiB5Mj0iMSI+"
-    "CjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiM1OGE2ZmYiLz48c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiNhMzcxZjciLz4"
-    "KPC9saW5lYXJHcmFkaWVudD48L2RlZnM+"
-    "CjxjaXJjbGUgY3g9IjUwIiBjeT0iNTAiIHI9IjQ2IiBmaWxsPSJ1cmwoI2cpIi8+"
-    "CjxwYXRoIGQ9Ik0zMCA1MiBMNDQgNjYgTDcyIDM2IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjgiIGZpbGw9Im5vbmUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPg"
-    "o8L3N2Zz4="
+    "https://cdn.phototourl.com/free/"
+    "2026-09-09-fcb898bb-b290-4343-8b74-4f1da38af026.png"
 )
 
 ES_CELULAR = MODO_MOVIL or (
@@ -1474,6 +1508,8 @@ def guardar_empresa_supabase(supabase, datos_empresa):
     supabase.table("empresas").upsert(
         datos, on_conflict="empresa_id"
     ).execute()
+    cargar_empresas.clear()
+    cargar_datos.clear()
 
 
 def eliminar_empresa_supabase(supabase, empresa_id):
@@ -1483,6 +1519,8 @@ def eliminar_empresa_supabase(supabase, empresa_id):
     supabase.table("empresas").delete().eq(
         "empresa_id", str(empresa_id)
     ).execute()
+    cargar_empresas.clear()
+    cargar_datos.clear()
 
 
 @st.cache_data(ttl=5)
@@ -1858,7 +1896,17 @@ def cargar_empleados_supabase(supabase, empresa_id):
 def guardar_empleado_supabase(supabase, datos_empleado):
     """Crea o actualiza (upsert) un trabajador en Supabase. 'datos_empleado'
     debe incluir al menos empresa_id y dni; los demás campos que se pasen
-    se sobrescriben, el resto de columnas de esa fila no se tocan."""
+    se sobrescriben, el resto de columnas de esa fila no se tocan.
+
+    OPTIMIZACIÓN + BUG REAL YA CORREGIDO: 'cargar_datos()' está
+    cacheado 5 segundos para que la app no sea lenta (ver su
+    definición) — pero eso hacía que, justo después de agregar o
+    editar un trabajador, la pantalla siguiera mostrando la lista VIEJA
+    hasta que el caché expirara solo (por eso había que darle "como 3
+    veces" para que apareciera). Limpiando el caché aquí, en el mismo
+    lugar donde se guarda, la próxima lectura siempre trae el dato
+    fresco de inmediato — sin tener que acordarse de limpiarlo a mano
+    en cada uno de los botones de "Agregar/Editar" que hay en la app."""
     if not supabase:
         raise RuntimeError("El cliente de Supabase no está configurado.")
     datos = dict(datos_empleado)
@@ -1867,6 +1915,7 @@ def guardar_empleado_supabase(supabase, datos_empleado):
     supabase.table("empleados").upsert(
         datos, on_conflict="empresa_id,dni"
     ).execute()
+    cargar_datos.clear()
 
 
 def eliminar_empleado_supabase(supabase, empresa_id, dni):
@@ -1880,6 +1929,7 @@ def eliminar_empleado_supabase(supabase, empresa_id, dni):
         .eq("dni", str(dni))
         .execute()
     )
+    cargar_datos.clear()
 
 
 def generar_plantilla_datos_maestros_planilla(df_empleados):
@@ -2221,6 +2271,7 @@ def guardar_sede_supabase(supabase, datos_sede):
     supabase.table("sedes").upsert(
         datos, on_conflict="empresa_id,nombre_sede"
     ).execute()
+    cargar_datos.clear()
 
 
 def eliminar_sede_supabase(supabase, empresa_id, nombre_sede):
@@ -2234,6 +2285,7 @@ def eliminar_sede_supabase(supabase, empresa_id, nombre_sede):
         .eq("nombre_sede", str(nombre_sede))
         .execute()
     )
+    cargar_datos.clear()
 
 
 # =====================================================================
@@ -3971,12 +4023,12 @@ if not VISTA_TRABAJADOR_MOVIL:
         st.session_state.dev_entorno_desbloqueado = False
 
     if not st.session_state.dev_entorno_desbloqueado:
-        # Entorno DEV oculto para las empresas cliente: se fuerza PROD y
-        # solo queda un candado discreto (sin texto explicativo) que pide
-        # el PIN Developer para revelar el selector de entorno. La versión
+        # Candado discreto (sin texto explicativo) que pide el PIN
+        # Developer para revelar los ajustes de developer (logo de las
+        # animaciones, diagnóstico de Nivel 1) — no es un selector de
+        # entorno Sandbox (se quitó, ver nota más abajo). La versión
         # celular no se toca — sigue igual que antes.
-        if st.session_state.entorno != "PROD":
-            st.session_state.entorno = "PROD"
+        st.session_state.entorno = "PROD"
         with st.sidebar.expander("🔒", expanded=False):
             _pin_candado_dev = st.text_input(
                 "PIN",
@@ -3991,23 +4043,16 @@ if not VISTA_TRABAJADOR_MOVIL:
                 else:
                     st.error("PIN Incorrecto.")
     else:
-        entorno_sel = st.sidebar.radio(
-            "🌐 Entorno de Ejecución:",
-            ["🚀 Producción", "🧪 Desarrollo / Sandbox"],
-            index=0 if st.session_state.entorno == "PROD" else 1,
-        )
-
-        nuevo_entorno = "PROD" if entorno_sel == "🚀 Producción" else "DEV"
-
-        if nuevo_entorno != st.session_state.entorno:
-            st.session_state.entorno = nuevo_entorno
-            df_emp_todas = cargar_empresas()
-            empresas_filtradas = df_emp_todas[
-                df_emp_todas["entorno"] == st.session_state.entorno
-            ]
-            if not empresas_filtradas.empty:
-                st.session_state.empresa_id = empresas_filtradas.iloc[0]["empresa_id"]
-            st.rerun()
+        # NOTA: el selector de "Entorno de Ejecución" (Producción /
+        # Desarrollo-Sandbox) que vivía aquí se quitó a pedido tuyo —
+        # tu flujo real de pruebas es con un repositorio aparte, nunca
+        # usabas este selector en vivo, así que solo agregaba un paso
+        # extra sin ningún beneficio real. El PIN Developer se queda
+        # como "freno" para lo que sí usas (logo de las animaciones,
+        # diagnóstico de Nivel 1) — no como medida de seguridad (ya
+        # tienes acceso total por el repositorio), sino para no tocar
+        # estos ajustes sin querer.
+        st.session_state.entorno = "PROD"
 
         # Personalización del logo para las animaciones (sello,
         # verificación, meteoritos). Se guarda en Supabase para que
@@ -8410,6 +8455,98 @@ elif opcion == "🔐 Panel de Gestión / Admin":
 
                 st.write("")
                 with st.container(border=True):
+                    st.markdown("### 🌎 Panorama General de la Planilla")
+                    st.caption(
+                        "Cómo está la planilla de TODOS los trabajadores"
+                        " este período, de un vistazo — antes de entrar"
+                        " al detalle de cada uno más abajo."
+                    )
+                    if df_empleados.empty:
+                        st.info("Todavía no hay trabajadores registrados.")
+                    else:
+                        with st.spinner("Calculando a todos los trabajadores..."):
+                            _calc_todos = calcular_planilla_todos_los_empleados(
+                                df_empleados, df_asistencia, supabase,
+                                st.session_state.empresa_id, mes_planilla,
+                                anio_planilla,
+                                st.session_state.permitir_horas_extra,
+                                st.session_state.regimen_laboral,
+                            )
+                        _total_bruta_todos = sum(c["total_bruta"] for c in _calc_todos)
+                        _total_desc_todos = sum(c["total_descuentos"] for c in _calc_todos)
+                        _total_ret_todos = sum(c["total_retenciones"] for c in _calc_todos)
+                        _total_neto_todos = sum(c["neto_a_pagar"] for c in _calc_todos)
+                        _total_aportes_todos = sum(c["total_aportes"] for c in _calc_todos)
+                        _total_costo_todos = sum(c["costo_planilla"] for c in _calc_todos)
+
+                        colpg1, colpg2, colpg3, colpg4 = st.columns(4)
+                        colpg1.metric("💰 Total Bruta (todos)", f"S/ {_total_bruta_todos:,.2f}")
+                        colpg2.metric("➖ Total Descuentos", f"S/ {_total_desc_todos:,.2f}")
+                        colpg3.metric("🏛️ Total Retenciones", f"S/ {_total_ret_todos:,.2f}")
+                        colpg4.metric("✅ Total Neto a Pagar", f"S/ {_total_neto_todos:,.2f}")
+                        colpg5, colpg6 = st.columns(2)
+                        colpg5.metric("📦 Total Aportes Empleador", f"S/ {_total_aportes_todos:,.2f}")
+                        colpg6.metric("🏭 Costo Total de Planilla", f"S/ {_total_costo_todos:,.2f}")
+
+                        _nombres_cortos = [
+                            (c["nombre"][:18] + "…") if len(c["nombre"]) > 18 else c["nombre"]
+                            for c in _calc_todos
+                        ]
+                        fig_panorama = go.Figure()
+                        fig_panorama.add_trace(go.Bar(
+                            name="Neto a Pagar", x=_nombres_cortos,
+                            y=[c["neto_a_pagar"] for c in _calc_todos],
+                            marker_color="#00B050",
+                        ))
+                        fig_panorama.add_trace(go.Bar(
+                            name="Descuentos", x=_nombres_cortos,
+                            y=[c["total_descuentos"] for c in _calc_todos],
+                            marker_color="#C00000",
+                        ))
+                        fig_panorama.add_trace(go.Bar(
+                            name="Retenciones", x=_nombres_cortos,
+                            y=[c["total_retenciones"] for c in _calc_todos],
+                            marker_color="#002060",
+                        ))
+                        fig_panorama.update_layout(
+                            barmode="stack",
+                            title="De qué se compone la Remuneración Bruta de cada trabajador",
+                            yaxis_title="Soles (S/)",
+                            margin=dict(l=10, r=10, t=40, b=10),
+                            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                        )
+                        st.plotly_chart(fig_panorama, use_container_width=True)
+
+                        with st.expander(
+                            "📖 ¿Por qué el descuento de cada trabajador es"
+                            " distinto? (explicación simple)"
+                        ):
+                            st.markdown(
+                                "- **Si llega tarde (tardanza en minutos):**"
+                                " se le descuenta la parte proporcional de"
+                                " su sueldo DIARIO por esos minutos no"
+                                " trabajados — el cálculo es"
+                                " `(sueldo ÷ 30 ÷ 8 horas) × minutos de"
+                                " tardanza`. Esto **NO** afecta su pago"
+                                " del domingo (descanso), porque sí"
+                                " trabajó ese día, solo llegó tarde.\n"
+                                "- **Si falta un día completo (sin ninguna"
+                                " marcación):** se le descuenta el día NO"
+                                " laborado, y ADEMÁS una parte"
+                                " proporcional de su domingo — porque por"
+                                " ley, el descanso dominical se paga solo"
+                                " si trabajaste todos los días que te"
+                                " tocaban esa semana (D.S. N° 012-92-TR)."
+                                " Por eso una falta pesa más que una"
+                                " tardanza.\n"
+                                "- **Adelantos y Otros Descuentos:** se"
+                                " restan tal cual los ingresaste, sin"
+                                " ningún cálculo adicional — son montos"
+                                " fijos que tú decides."
+                            )
+
+                st.write("")
+                with st.container(border=True):
                     st.markdown("### 🔎 Vista Previa de la Planilla")
                     st.caption(
                         "Elige un trabajador para ver, en vivo, cómo se"
@@ -8424,7 +8561,14 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                         emp_preview_sel = st.selectbox(
                             "Trabajador:",
                             df_empleados["nombre"].tolist(),
-                            key="emp_preview_planilla",
+                            key="empleado_planilla_global",
+                            help=(
+                                "Este mismo trabajador queda"
+                                " seleccionado también en 'Datos"
+                                " Maestros de Planilla' y en 'Datos"
+                                " Variables del Período' más abajo —"
+                                " no hace falta elegirlo 3 veces."
+                            ),
                         )
                         fila_prev = df_empleados[
                             df_empleados["nombre"] == emp_preview_sel
@@ -8664,10 +8808,16 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                     if df_empleados.empty:
                         st.info("Todavía no hay trabajadores registrados.")
                     else:
-                        empleado_sel_dp = st.selectbox(
-                            "Selecciona un trabajador:",
-                            df_empleados["nombre"].tolist(),
-                            key="emp_sel_datos_planilla",
+                        _lista_nombres_emp = df_empleados["nombre"].tolist()
+                        empleado_sel_dp = st.session_state.get(
+                            "empleado_planilla_global", _lista_nombres_emp[0]
+                        )
+                        if empleado_sel_dp not in _lista_nombres_emp:
+                            empleado_sel_dp = _lista_nombres_emp[0]
+                        st.caption(
+                            f"✏️ Editando a: **{empleado_sel_dp}** — para"
+                            " cambiar de trabajador, selecciónalo en"
+                            " 'Vista Previa de la Planilla' arriba."
                         )
                         fila_dp = df_empleados[
                             df_empleados["nombre"] == empleado_sel_dp
@@ -8976,10 +9126,16 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                     if df_empleados.empty:
                         st.info("Todavía no hay trabajadores registrados.")
                     else:
-                        empleado_sel_var = st.selectbox(
-                            "Selecciona un trabajador:",
-                            df_empleados["nombre"].tolist(),
-                            key="emp_sel_datos_variables",
+                        _lista_nombres_emp_var = df_empleados["nombre"].tolist()
+                        empleado_sel_var = st.session_state.get(
+                            "empleado_planilla_global", _lista_nombres_emp_var[0]
+                        )
+                        if empleado_sel_var not in _lista_nombres_emp_var:
+                            empleado_sel_var = _lista_nombres_emp_var[0]
+                        st.caption(
+                            f"✏️ Editando a: **{empleado_sel_var}** — para"
+                            " cambiar de trabajador, selecciónalo en"
+                            " 'Vista Previa de la Planilla' más arriba."
                         )
                         fila_var = df_empleados[
                             df_empleados["nombre"] == empleado_sel_var
