@@ -647,6 +647,53 @@ def calcular_racha_puntualidad(df_asistencia, nombre_empleado):
     return racha
 
 
+def calcular_dias_falta_automatico(df_asistencia, nombre_empleado, mes_sel, anio_sel):
+    """Cuenta automáticamente los DÍAS DE FALTA del período: días
+    laborables (según los 'Días Laborables' configurados para la
+    empresa — por defecto Lunes a Sábado) que ya transcurrieron y NO
+    tienen ninguna marcación de Entrada. Se usa como sugerencia
+    automática para el campo 'Días de Falta' — sigue siendo editable
+    por si un trabajador puntual tiene un horario distinto al general
+    de la empresa (ej. solo trabaja 3 días a la semana)."""
+    hoy = hoy_peru()
+    ultimo_dia_mes = calendar.monthrange(anio_sel, mes_sel)[1]
+    if (anio_sel, mes_sel) > (hoy.year, hoy.month):
+        return 0  # período futuro, todavía no hay nada que contar
+    elif anio_sel == hoy.year and mes_sel == hoy.month:
+        # No se cuenta el día de hoy — el trabajador todavía puede
+        # marcar más tarde.
+        ultimo_dia_a_contar = hoy.day - 1
+    else:
+        ultimo_dia_a_contar = ultimo_dia_mes
+
+    dias_laborables_empresa = st.session_state.get(
+        "dias_laborables",
+        ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"],
+    )
+    DIAS_SEMANA_ES = [
+        "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado",
+        "Domingo",
+    ]
+
+    fechas_con_entrada = set()
+    if df_asistencia is not None and not df_asistencia.empty:
+        emp_asist = df_asistencia[
+            (df_asistencia["Empleado"] == nombre_empleado)
+            & (df_asistencia["Tipo Marcación"] == "Entrada")
+        ]
+        fechas_con_entrada = set(emp_asist["Fecha"].astype(str))
+
+    dias_falta = 0
+    for dia in range(1, ultimo_dia_a_contar + 1):
+        fecha_actual = date(anio_sel, mes_sel, dia)
+        nombre_dia = DIAS_SEMANA_ES[fecha_actual.weekday()]
+        if nombre_dia not in dias_laborables_empresa:
+            continue  # no era un día laborable para esta empresa
+        if fecha_actual.strftime("%Y-%m-%d") not in fechas_con_entrada:
+            dias_falta += 1
+    return dias_falta
+
+
 def render_gate_consentimiento(supabase, datos_emp):
     """Muestra la pantalla de consentimiento informado (Ley 29733) la
     primera vez que un trabajador entra a marcar, y NO deja continuar
@@ -9007,19 +9054,31 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     " tenga su propio campo."
                                 ),
                             )
+                            _dias_falta_sug = calcular_dias_falta_automatico(
+                                df_asistencia, empleado_sel_var,
+                                mes_planilla, anio_planilla,
+                            )
                             v_dias_falta = st.number_input(
-                                "Días de Falta (inasistencias):",
+                                "Días de Falta (inasistencias, calculado"
+                                " automático desde tu asistencia —"
+                                " editable):",
                                 min_value=0, max_value=31, step=1,
-                                value=int(_v("dias_falta")),
+                                value=int(_v("dias_falta", _dias_falta_sug)),
                                 key=f"v_dias_falta_{dni_var}_{prefix_periodo_planilla}",
                                 help=(
-                                    "Días que el trabajador faltó sin"
-                                    " justificación. El sistema calcula"
-                                    " solo el descuento: el día no"
-                                    " laborado MÁS el descanso dominical"
-                                    " proporcional que también se pierde"
-                                    " por ley (D.S. N° 012-92-TR) — no"
-                                    " tienes que sacar esa cuenta."
+                                    "Se calcula solo contando los días"
+                                    " laborables (según los 'Días"
+                                    " Laborables' de tu empresa) que ya"
+                                    " pasaron sin ninguna marcación de"
+                                    " Entrada — edítalo si este"
+                                    " trabajador tiene un horario"
+                                    " distinto al general. El sistema"
+                                    " calcula solo el descuento: el día"
+                                    " no laborado MÁS el descanso"
+                                    " dominical proporcional que también"
+                                    " se pierde por ley (D.S. N°"
+                                    " 012-92-TR) — no tienes que sacar"
+                                    " esa cuenta."
                                 ),
                             )
                         with col_v2:
