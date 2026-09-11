@@ -648,6 +648,23 @@ def calcular_racha_puntualidad(df_asistencia, nombre_empleado):
     return racha
 
 
+def completar_dias_falta_automatico(periodo_bd, df_asistencia, nombre_empleado, mes_sel, anio_sel):
+    """Si 'dias_falta' no viene explícitamente guardado en periodo_bd
+    (nunca se guardó, o el admin nunca lo tocó), lo completa con el
+    cálculo automático desde la asistencia real — así TODOS los
+    lugares que calculan la planilla (Vista Previa, Excel, Panorama
+    General, AFPnet, PLAME) siempre coinciden con lo que se ve en el
+    formulario de Datos Variables, en vez de que unos muestren el
+    descuento real y otros muestren S/0.00 por no haberse guardado
+    todavía manualmente (bug real ya corregido)."""
+    periodo_bd = dict(periodo_bd) if periodo_bd else {}
+    if "dias_falta" not in periodo_bd or not periodo_bd.get("dias_falta"):
+        periodo_bd["dias_falta"] = calcular_dias_falta_automatico(
+            df_asistencia, nombre_empleado, mes_sel, anio_sel
+        )
+    return periodo_bd
+
+
 def calcular_planilla_todos_los_empleados(
     df_empleados, df_asistencia, supabase, empresa_id, mes_sel, anio_sel,
     permitir_horas_extra, regimen_laboral,
@@ -663,6 +680,9 @@ def calcular_planilla_todos_los_empleados(
         periodo_bd = cargar_planilla_periodo_supabase(
             supabase, empresa_id, dni, prefix_periodo
         ) or {}
+        periodo_bd = completar_dias_falta_automatico(
+            periodo_bd, df_asistencia, emp["nombre"], mes_sel, anio_sel
+        )
         emp_asist = df_asistencia[df_asistencia["Empleado"] == emp["nombre"]]
         emp_asist_mes = (
             emp_asist[
@@ -697,16 +717,20 @@ def calcular_dias_falta_automatico(df_asistencia, nombre_empleado, mes_sel, anio
     """Cuenta automáticamente los DÍAS DE FALTA del período: días
     laborables (según los 'Días Laborables' configurados para la
     empresa) que ya transcurrieron, no son feriado oficial, y no
-    tienen NINGUNA marcación ese día. Se usa como sugerencia automática
-    para el campo 'Días de Falta' — sigue siendo editable.
+    tienen marcación de ENTRADA ese día. Se usa como sugerencia
+    automática para el campo 'Días de Falta' — sigue siendo editable.
 
-    IMPORTANTE: usa exactamente la misma lógica ya probada del gráfico
-    "Comportamiento Diario de Asistencia" del Dashboard (mismo criterio
-    de qué cuenta como falta: excluye feriados oficiales, y considera
-    que el día SÍ se trabajó si hay cualquier marcación — no solo
-    Entrada) — así los dos lugares de la app siempre coinciden en el
-    mismo número, en vez de tener 2 cálculos distintos que podían dar
-    resultados diferentes entre sí (bug real ya corregido)."""
+    IMPORTANTE: usa exactamente el mismo criterio del gráfico
+    "Comportamiento Diario de Asistencia" — cuenta específicamente
+    marcación de ENTRADA (no cualquier marcación), excluye feriados
+    oficiales, y solo mira días laborables — así los dos lugares de la
+    app siempre coinciden en el mismo número. (Bug real corregido dos
+    veces: primero se contaba solo Entrada y daba de más porque no
+    excluía feriados; se cambió a 'cualquier marcación' y daba de
+    menos porque un día con solo Salida —sin Entrada— contaba como
+    trabajado cuando en realidad la Entrada nunca se marcó. La versión
+    correcta y definitiva es: Entrada específicamente, más feriados
+    excluidos.)"""
     hoy = hoy_peru()
     ultimo_dia_mes = calendar.monthrange(anio_sel, mes_sel)[1]
     if (anio_sel, mes_sel) > (hoy.year, hoy.month):
@@ -723,14 +747,18 @@ def calcular_dias_falta_automatico(df_asistencia, nombre_empleado, mes_sel, anio
         ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"],
     )
 
-    fechas_con_marcacion = set()
+    fechas_con_entrada = set()
     if df_asistencia is not None and not df_asistencia.empty:
-        emp_asist = df_asistencia[df_asistencia["Empleado"] == nombre_empleado]
-        # Igual que el Dashboard: cuenta CUALQUIER marcación ese día
-        # (Entrada o Salida), no solo Entrada — y se compara tal cual
-        # viene la fecha (sin recortar ni transformar), igual que la
-        # comparación ya probada del Dashboard.
-        fechas_con_marcacion = set(emp_asist["Fecha"])
+        emp_asist = df_asistencia[
+            (df_asistencia["Empleado"] == nombre_empleado)
+            & (df_asistencia["Tipo Marcación"] == "Entrada")
+        ]
+        # Se normaliza a los primeros 10 caracteres ("AAAA-MM-DD") por
+        # si la fecha viniera con hora incluida desde Supabase — así
+        # la comparación nunca falla por un formato inesperado.
+        fechas_con_entrada = set(
+            emp_asist["Fecha"].astype(str).str.slice(0, 10)
+        )
 
     dias_falta = 0
     for dia in range(1, ultimo_dia_a_contar + 1):
@@ -741,7 +769,7 @@ def calcular_dias_falta_automatico(df_asistencia, nombre_empleado, mes_sel, anio
             continue  # feriado oficial: no cuenta como falta
         if nombre_dia not in dias_laborables_empresa:
             continue  # no era un día laborable para esta empresa
-        if fecha_str not in fechas_con_marcacion:
+        if fecha_str not in fechas_con_entrada:
             dias_falta += 1
     return dias_falta
 
@@ -834,6 +862,127 @@ def render_gate_consentimiento(supabase, datos_emp):
     return False
 
 
+# ES_CELULAR: el dispositivo físico es un celular (por ancho de pantalla o
+# por venir de la PWA), sin importar el rol de quien lo usa.
+# Logo por defecto de las animaciones (meteoritos, sello, anillo de
+# verificación) — puesto directo en el código a pedido tuyo, para que
+# no dependa de subir un archivo al repo ni de configurar nada en
+# Supabase antes de dar de alta una empresa nueva. Si más adelante
+# configuras un logo distinto desde el panel developer, ese reemplaza
+# a este; si nunca lo configuras, este es el que se usa siempre.
+# ES_CELULAR: el dispositivo físico es un celular (por ancho de pantalla o
+# por venir de la PWA), sin importar el rol de quien lo usa.
+# Logo REAL de la empresa (S&G) embebido directo en el código como
+# imagen WebP en base64 — a pedido tuyo, después de que el link externo
+# (phototourl.com) resultó poco confiable ("funcionaba un rato y luego
+# volvía al ícono por defecto"). Al vivir como texto dentro del propio
+# app.py, ya NO depende de ningún servicio externo — nunca se cae, nunca
+# expira, nunca cambia de golpe. Se usa como logo por defecto de las
+# animaciones (meteoritos, sello, anillo de verificación) para
+# CUALQUIER empresa nueva, antes de que alguien configure un logo
+# propio distinto desde el panel developer.
+LOGO_DEFAULT_EMBEBIDO = (
+    "data:image/webp;base64,UklGRngcAABXRUJQVlA4IGwcAAAQYgCdASqWAJkAPj0WiUMiISEZG6ZoIAPEtgQ4AMT4yH7t+JPbs"
+    "Z66d+Q/5H/LRXH6P95f65+yXyg8DOkvNO8t/Nf93/cfyW+Cf+A9jP6W/zvuB/wf+Uf6v+zf4z9n/mx6PP67/efUB/N/8H/6f9r7y"
+    "P+I/ZX3M/3X/C+wB/Sv9b/+ewH9AT9ufVy/6f7vfBt+2/7f/+X5HP2D//XsAf//1AP//xRv9r7Z/7F+Tn9c9T/xP6D+sfkL+6v+P"
+    "4N//E9C/4z9nvvH9Z/Zj++/tt81f7X+peKfxw/pPUF/Gv4v/XPyj/uP7ce4//Rd7PoX+c/2/qBernz3/J/4P9n/8z+73tcf0noz8"
+    "ynuAfzX+lf5f8s/71///e5/wHi7eeewH/LP6v/uf8b+XP0q/zv/U/0H7r/732xfln94/5f+G/yf/d/f/8BP5H/Q/89/e/8p/4P8t"
+    "//P+p90f/z91X7S+zL+yP/ldHpl/GJsN/6E+HHruxy/aOqGnbzCxGC7RhZQ/dKu0YdJ1VLdEKLJBcGYkktDiiRLce8jiI7MImOhN"
+    "ECMKl2lJXjfBipmhHDrQ6l3hyj8Fx6U1HKAk2KU8KxmyEMVetroiv/+T+iiNuj8oRk4KNnk6RQ5wTcodKAP7AGz1rrfbI2p0zj+p"
+    "5MB4gPGaTn8hEXJlbgSFrt6UA6hfjyqgw3J1KeJE1nADzdpc9WoCarS0KaEJtXOmWvGq55yP6RgCkpyGlfoo5e4hie7YJFJtSg0F"
+    "aF1k/egiI2GU9IM2EVDZ/sr/3QZi3m5wQZnNCFjToqRg6udRd1bfyHJ4wFkBgYBJ1ksDDqp+p8sNjvlvd7MOxTvFP/CZLLZExTbz"
+    "ra+WDABbq7/0DsqkQ+Pb7kfVFPHn397bRsjsxL4+6U2Qbi+WaU/k5xv9uGxEmtX+novkfCRKpi2CzvMiVSPPxDGzgnOzW3sXPmeI"
+    "+kAn/GJPNpStuRM5gyqYZNIretRDFCSPZLJkp9CMlPjodx6MNdY2H6xUdIhzmHLjiuVACdyN1EPnjLufTzqy4Rkjq1ZgHsxV8uFN"
+    "IiAPNAQAP70kwaAqji0r5H2UtL2ZhOVOeeQX8468AYZLTUcMTMBj7bAuaxscFhEm/SLro2oIe1ItuUOAXqC9FWPqSVNS6stQBxpw"
+    "xmH3ixFkO7D3RZ23Bi4nMQuxSaSpvLIIdub6fjR0HXTNljCgb7LdIvOZJvZCJQZRuw9g1UDxKRn6XqmBt1Yq1Ll3Avvc7E8oXBcX"
+    "BlY/ME51qr8tJIzJ+zOeYnjjPKZ8IhZWIhK30NWuv+HXxTVYvfKOOlY/xR4L3470g4jGgYckEicxk4GW5lcZUINqTOZ7EoC9KyXS"
+    "ZQRoMNXCm/wGfJ2xfxp6l/Y6N7CJIuhQmLKXa3oinKyYMnonculR3GUTXuagjFwbPbPThUYrJep3c9dMJDITqPqI5btyd+V+nmKd"
+    "tMGt+mBWSwF4Tdqakm4A6CECS0NJvCMEAms1Fa8M0rMbmLu0rnQVrcNfgdmiNr4ZwRVCUAn0KtLt1LFnejA7NcReSAxyDM6ycCFE"
+    "smPetlHkkJX8WwAacSFMQiTYcz8lKqj0R1MyPkq+TYEEWiGgijahJgXDEpmMRM6AH+mHcakaYSMtRZ3ksikvSNCNt12v75ap6VjA"
+    "7Tf7nITAYDS1TFghTCUzJPi2/W4gPh0NaMgzZm5ZiYmsRvxo6+lPRDZ/8jwB+tUvnq0vSf0D5aRUVfp3g9FXg+lVmbrRveXqH0mH"
+    "HiFbqC5IlfSwGOcKprFEovNiHmCVyPXpBoalcoaSgukmq72MQVty6Kka9P3cHH6sH81jZJy30dlrckMlR55MLFqORgSV/c6DY9iY"
+    "gKyIt9mfVxaCUt9WjeCtBmJV+Y1eGhHGcFUlb7sgLnYyybEflQO0ynMGh0JnL7RZj+KXUsrpMbg24t6WbhjsrdbWymT5AgMVSEle"
+    "kMizGuZAmeFCdGy775fSZTovoAOicWQFLXE9i2AmPkgsecSUZT5Sp3EHDeK594NbrVU9PaANkn0Ol5Y5zSTR3mQCHhrdOLce5l0a"
+    "e3xz17hmT6So67/TtuN1e/p77qmv/bLnf1Nbt9myCV4fI+VopjcUHSgIJwYVcEHYrM0sOlWdHtreY9yirE37pW7Pd5YSWs2DAypb"
+    "Pn5VCM8O28/pX+IFMbnKqfNQhoI/XzKySuloGdLsYELznro9AzA/eG8p4tq31IWe6PlsV0ZlM2x8IVx/5Xx7LtFjaCcpGwwpsN88"
+    "km1nFpFKVJZw0GvV2AX1ywmLFyc6Txq2r69ywuslPRek4hqtqq0BRWNqMYo6BiPiwTA+q5bzNS3JLSUWoJ4v+QlpW1Ej04NRiqfw"
+    "ofpd74mPwGTXgjvIQLPPoPpagfMTXEAlOtvitqu6NlFq0gqt2VvrYP8sO4B15l2fsEk/4ntV1uEN2wzzteM76bhg0dTm02+YP7H0"
+    "1s4CPCI4OYk7F6aLwFR6wANeeMtvguTt072vTdnK0PzASp2ROfORteOREA8v5+mpmhUxBUIvwlkzKSOhEAR3yKNcn/6JXjZJDf6p"
+    "grq+DQAY/sDx6ZQcGsy1TYij5cKFFsR5ou5cEPrhjQxAEw1kmJw8VqmmWfrIEJtJj9AdP/pBxSnoO9/5NfQEAXiL5/tc194X75Gy"
+    "fCw1roy7IIuL2piVeLr1a6/4MEwv6jLNejYLCKKMUgVKS57w0SVLrSuRDBuIxAjFW3a0u5IzpuvfdNjO6TwNRKxWvPBTadP5fjpf"
+    "xT4IoE3QLxv/3aBVd5RySlLZXVvmZBChl5OUrQVzuB6kAOFDEGZltLKIDnHclYe3zI/krZ5tHB37NzRGHokHdkJBrYbXYWcEXk3C"
+    "0WLDAawzhXfng03HsZesqTqfGKfajUurQ2dVMOR8qD8CZiRKRCEOLGfyvsdVx/mCAxe+lgEMqaqX1gfjPx6bgpV9GbMuxwkN4YHy"
+    "hTsEPLryn6DPRZOsb8JRDnCFlsbOLhqUjzo+zl5YDs69P6rcxjv+cmPbcTf8TzBNHHHiINPIyE0i53jwfUXNSyyUALFXBI9HvUI8"
+    "OE5DlAjev1ubIVNk6t1XDwp1LhCs2lVYGo+mHAeSE+oY6sGsiO51pzZU63MvciN++HM/nxCCJzry1aZ/vt09GBV62KnshNm/qO7I"
+    "zRtUrnvrPfpkb7kr8vQiqpt6MHbtDIf/2b2zytAg2MSiP1MRoKd4/JzFb31lP/XS7ffs50UIXz3JV6GMlIpbvfPtqmx4JoG8canc"
+    "EeoYFV1u3TU02HItwe7XI/T0olpmv+WX19EDH6p8WqaBDfdmaReCLtYyp0l4kZKpzpeTWUNq6l4/oX60kCBIPKtCfzsSSKs3U0Km"
+    "pxUdWz9U5u+TOy4dT5WkZn48BdO/aCHbJQcW0ZtJq2NpGv2iszERqcI7PTuAYzrTMv6WvXdefMvsoh2tCkiWYgtMmSsmv0kJZObM"
+    "LMX5IFuWPlOlYVOsYkr1wAQI3rXxMznw0/+3s0gWvQHMC9rxyJfuP8KkDSUGlrKAEl57e9hlJ9+VIwwj01YEMoeUh6sPLExjxu6b"
+    "tKvRbbZiq6xQTfvJcflav7mao/coxZw2Vs85FcPLIS49BHshW+06bv3lYdxFbeNSaz/33dkQvNYF8vpEiBCRU/iezdd3pBO5S4M1"
+    "Uz3Ad/Dfm5hCyMue3E/+sEXhPUSPlluyD6sBTupISJxLyzuyvrxtONMILUvB+REcXrWuL2jqQdtnp9lFp8HLHrC13olfqXxrM798"
+    "jJpJt/522Cp2Y8/A4SwOdHY2gwH2ZXiUGKLEjknN1bn76hO6EmQtK+AGyX6veXN+RdYM4WZJoz4Yr8Lj/mlZ850lPihRpi4stvF6"
+    "q6eVpmbdedjuzPtYSP4iRNFBxe1kyuHWMLQOfbbNBroUID2aaVG2VsuRiIKNDinZkAIUdyPSkUpqdfXRR1TiylzYsdcRwexS2BZq"
+    "Y3604EOhC2pcWi2Ulc/n86+ofrWIwytEV3WQIhH9zURdRJuldY5OxhUY+O+6hg43+Y2936T4QLZdWgLyrnmkktkGrb7uAHnBHR6o"
+    "yx/zCw9bcfnGFCYOI77RJlEHvbMja0vvNRtNoX1jWKk04CAeEcGnSnmw09SWVPPDDM/shNNdgC7pBfE08nuzZAmEV9hvS4q3ig2z"
+    "x2GAmvwX5V5F1bwxBhtS+pWR8mSsjCksq5KjEvSxmQRq1JlDntbH7yfORsZSehF27zl6Sbf59sNVi5ekmzPyu7DR5saOHRbNhXjW"
+    "8tN8BOE/8ia6qZ2TpetkLbf/2w6XueFdgZNQBVaD7LQSX0pWzu4n36jLjblLnM4d8WCp9ET1mUDsq2SsNl7lYzpAQm/3GkzWOvaK"
+    "lbA3ZHA47kqbnA3AKJ60CJqliOmDVqSzeR7p/bZKryd+r348qxFdIfWLupadVdSaPEN/ybRsNYlVct/1I7ldfviW0SES3aZGDGrW"
+    "4LCUKSmpMcSGCZXFQNpCYnvw/Bq1oDT0ck+qArgV2HKLSPNjpyNrDf5CRWWCjPs5iDKyP6vjwfYX4pESZVNQfZnZuWFYJquCuBY9"
+    "sCSuQja82Lh1PV72AJ5QW9U8exdm9PUcSXafLkNpP0V8xOg3579xFT6gLlJLYn07SscUpZLhtNrajfMLlnslrKZC4xFKNfTPawPd"
+    "VlEF/XM0Z2hWK79m4lfFpDb3gwmXp2ufaWNnfzRvb5hjpKpDXkX3Xb17sA4VPhebHOcFkiJtL3vTe0D7BoJTUEOng5wSoUjxoAGA"
+    "sDfyrOz48NQYpIzHNh8nm4eEm8Ck7tcKNz9fxQwqFtfVNW+u4cKjs54iUBsmjsm9RWjPAcm0e78tG1dmHN+Vdx+fwVZHYBwic8Wi"
+    "jF39tknRw8bjHOHqdOndW9YZbE8GeilGKUpFd4NMlGE/Se2mbZXc69Un8rHjtaYqMbjbgnjTCSnkXjrDWRjMj0wbsK0FE8VlC6Hz"
+    "nIDUbj3SahJOP5I9HUjkUB0R+HrHFjvhGIJXJoYwA8Q+yhBISrUHWMlovw/HieW4pK6jnzG1eiIFTi3d87zhHYylfnfSz9bdsGYf"
+    "jmIGBwoUj4jp4KjbTSjor4VaVj7yvyTu96J+8MXyHasmfLQRmNqdUVVedR888o/ESGO9uxwWax//E01v+d6Og51VTVNBzp8RkOvA"
+    "FpPFvJWjM1w4tHpNu7FVusPHBIQ+4cOLVa4Q2UF4NrtfbwE9K375eXQHsmhpQhUh3/C96XKlAVguSj+2TN09+42ZhDd/FwueZ8nz"
+    "4Kh9q1atn/c3OIahYUS32QVyo+RgKkwmRBKFxBu7+izKkYXHLqpleWGlRCSV2z85FDgh2ElfSZwayzwVtRHZ2MmqIhR3uugwCVEz"
+    "188OYwku1xfQXfBSEheTikd4lmLqtXx7QU97yJSUtX8XYFO2ruo9PL1jc+xHqmhYZtfzPl7VHTzGhRI3mIAbPwXH862GX2Ikhj1N"
+    "jzn8FzZoxE4Gk+TGlzzYKrs2nL2/8CLlO5XMWYJCaIVkmf06nxSYtYUJJyhoOwZODUcokptsCBwnBDHkVI6lkrzWBZhcYmAg8Fbn"
+    "ZiAqWQEpi3AOm0Y6Uui03CpRTwWmpxgnhddTi+4EHH/0diR6rVPqTYl/0BctXvbxXQ/+wh/wtOUOLVTMrsrla1s8ERNNBDHbdfIp"
+    "G6/g/VNs8BICg5r4jslNuTMQ+mSUHrXrRu0EfVtgZZFcfPJHkUIwrAuhrL7A22d2wk1N1+kpacWJZ+pIxZ8Y0l7h5831MTtN1uen"
+    "ygWa8noIB/0mrF40tZfx1WTmy4PUrh5SbPFH/vssNCL2aBkRI2x9oSpl3V5pSv/Of8M7KGTzVG4UyYReY7kQsHYNTnGo/bFVUKes"
+    "3itQaRumJkawv98QVDBU0xhTocd7opSK9X+XCTR8ML9YXV2uVirzDgHoPoPIKLDfI3PiM90GFlxA/BsYdQiQ5xN0wuFP464q8u4l"
+    "UXHIXV+r2BT5hAKtC3i+FTIx7RDDChwxymAtyaZwkOQZV0sc1QKhQK9czK7DU4tPHu3/bL8dCnpR4+RB2f1BFWOiaT/cYKuiDNmj"
+    "FaBYO5T6eVwpvD9k1pVaIFn+GvJwkG9He21yzGAanPy391pWR29QSIrnz/x7frUZb0N7FC3WFSJaIXBo/EsSSaHhObLACP60HI64"
+    "ABsYBhDmpSsdmfD4DFz2jUdS7SD4oaefoyp946OjdshiV+SU4Yb6uFXiwfmnTGRB6qlVkNvc3K/ocb1Obppta/BzOax6dJAo9vY0"
+    "oZxOK4+rp/koVL7Onk6fO0pkGqJZh9Uu3b9H2AzvjdavYLaSZsHHoSAWexwT31Qtf8m85+s9TKqIsyq9nIQO6LmRMnV1ZOp+PJXl"
+    "y6KvulcdDO422SnFfsXT+86GxGnVdc/wYuv4/hfVk+/8KcLF39ZmZzgCh8lH8SlnJ06EVE3d6uKWAcuOdNcjN1KYKcHuKSeF1Zqq"
+    "AVOcGcwhMoSFpHWnY1K7WzONigBsDIejNfQ7qDw0AnRFOtZT+/+4HczNZAeptVK+PMi/cSLmfuZCsLRpzYIsaVOLrVuOLMZRXs6I"
+    "FUs3nbG+Hm2cApx93UxMrgmsMaklXNlmPKU+391bJj4fISOufu3kCKSxwAb6/mGmI7e20ISvKavJao/+WCIf1GoStEterHmK8jMk"
+    "kIETW02mwkBHK7P91rLVQQvIILU6eQJ4Gz5QZLuQxOuBPzllENn3kkzpiLNLAGfihstoVrDd0HP+5uaDFRuUmLgS1dANWCeoRE7o"
+    "j8y7MtUHZljEWf0IsuJzBBiUE2irbzCFSfda7EoEJNPQYo41Ryx5BrV9NHQVvPpNL6GfFBcE3AeD9GUI1CrOtHHfN7qbWzSLBgcX"
+    "8j8qBfLPed5d6/k6zgiKstPfheTERwViPh8jij3Wnp3Nj+sa9qPzKEv2w7I9Dx5Phd4Egp0yaEoWIGsxFdsGN3pm811TQIOsyVQr"
+    "zEXptWzxeOdzHM4/zn4dQ3YuysnIWLlln+iXo2fG4UT15N20iQXWdQSDlKoc6l3YrFK5sql6IeWe+yYyLYrkAfosOs0jmuOwGGKM"
+    "lVIaADXSQVn4arlUGIYAT+XIHTlROPmxpiu/d45gmYzvhXlprDY7yBev4hV0W6lYKmr2Wxm6+jw2z2XqfHzv3Sr3IM/nDaOYIqlR"
+    "5q4g8EClKVSoMK1g+i1uIw6jIoZ/bY2sOwpRS243gewx+pE1c55jdECR7mgGflobEo5Yl9WXawFwsKUxYIqQAomG8H3U2+14h8HL"
+    "r+Le/BZaVvfVwBZiZIBwODJounyNZHYsnhcw8h6mizsRZmU7Ogh5mQPEFtod3GY9VwJD2LUwjxfXSN9096BV/5nVCkCHXHV3hwNj"
+    "Z/4er/P6w5ZR4uCctdiJV5NENSbyeXRtp4VETJgkq9RDHQPR12f4KIv1z+n/Fai7FPikVYzALRyqjjDNAXDSSskhwZVF/pIsmRa2"
+    "o+76BZh9wX0Z2S6oU1wcq7JJNO3+RNw3tZ/5+Q62BtbGqVK3frKt5KsYj11d3zFwepNfEXRNIIqz5iDlRrvtf5Gi1wEPrc4MRKQU"
+    "2jSXcVrLBFvpzDf9QrVvLZc0D4q0Vh31Ob3Q6aYApoNNJtogqrozCz5Ihajw7eWA/9/Fjnu7NOmgBVbt4K0CeVtHPG1pRSB+xMju"
+    "O9K+BFPV4xTRSGsdyjjlVesJJTyY3udwYoJ5DwzURB7mgYUMr++vDPqfZSn3efxy8RZlebSmM2f1Us39J3lr/Pfi2qI4Jcsnuvbn"
+    "ZxdvcCHsKH47K5xYjjVyjw/MAe+JGhK/O5KuYAWxxtceDysnEgNGl9nYOWRqa1ObtIFEpPpA+21keX8n+3ezXEFpAhGxRoPhAkUc"
+    "K+3+SvtiMkHn0kBSb8OU1IRUdzhcsTSpzSz30kxNLxHw6Issf73XWOcWNub/1kDIXbSi0kh0kdAsTPJ2RMWPG/5WzdeDtWhY/jdu"
+    "IY5Er465wE3dgZXe35NFfKEcJbHlrBKEVB49NKMjnoivlg/6nLfW/mJB2JroVj3F2NDVxuc18BDfiIXpCBggXnlaqrR7B1EsrgQ2"
+    "JJIGDixJtjQ1l2KKCoStwi5EeGbewuCpfKnphGJquMvXauCjkY2so3Mq0OO/JuDmdxL+aiwDsScLHdx8cmVvBTQj/WXrDcGl+cPn"
+    "7fhNMB+INOL2dhqfmNTRBoy64vIrJ822iPHdw3nauovxEHQBz/SrdaK2e7gQjDQuqwyjxjf2qP2kSjmVkKH0tEj9SudmnhvIoGtw"
+    "hTyWEwCfNNrxwgioT6r+Gjg47pcIDL/m/BbFZ0h4LcJSov9Z3IqtsQBiyJ2ML3vRw+mfXj9RRwhofv/VG2KiJARiRnYcjaxEjHK+"
+    "I6pje+WmJPMWy3xRBpVU4TZJmh6GRiPUZ8EUgljubTSQ2CiIdX75uxuPJsimiQMRNs57gemJkS1BI0ZHlD4XBxtHZstlE4nG3tS0"
+    "rdYBC7mri8dIofF7diolyK7ce+odk/MVHLGm7rgYR6Rw3DM7hs29YMeRwucjfeD7+khOOgBohuXnHCHFDOVblfgg1Sq/eGQ584Ic"
+    "PEooYxq0SF623wiPN5hvsO+3G5aGLLNboPmN7ub3ezLfDU5RXd8SznQ8awjLa+aKNt/Cq3rnN8Vei94Cn2xprQgDD+GhvHBUThRf"
+    "BuGZdrSvVE6J4Mb9YOPf6Z+dENvc1yL0eoaqB0GTejhJSaAKOk+QPsbIT2tTETLfrrhSKp2c1XwjylbzxHeGYh9ZlM5vtRZXZk8/"
+    "BfUDC/Adkf7nTsgh3iff+pMDUJvs8NFmBKDQmYyemp1B1JXoiVmkfLSVcG5ztTMxkUmiKjross0zlhoH8CjZ9Fe9go90/Im/e0vz"
+    "wgjnje0ATwnzupKigbRLWSTSzO+Wd6JV8uSoxodVU1j7d4QZf5OXPkRvwkDzyj2WbhIxkxTIWZSKPgB8xCT7oWCsJjHD9MshuyXR"
+    "eA+OBKCLMSzjOhNGizOBn32ktfSar23W7emu3+fwVAREva8LwwhyeLMk4B+/AoBl+BgmC8OrTxq3EmYQiK1pryyVxe/orcjztM6V"
+    "V/FXgxAdCpvdBWvz/ddoOtbdGskKkMSaVkthmwXtZud5ChF+1ey5HbFxa3wPIKEY/0lFfU/5ryLOXy0sKLrw2TAI1R/MnlphAgG+"
+    "PXMUkNB/w7ZtSqEEBA+C9O4Cm3M28sf2K4iEeUXhDH9CwZ6dY7QyhM7mwq0K3gUH4BmGOwCHttJWT83T0/FGN4AgZwZzTmg54Qk9"
+    "+naElJw+X1PGWvA9YuWWJRBPc+EfOOI43CP8G5Jt4gvryFJM73X/ZgbWlnC4kJL3OKVmiTPhWaJd3udyRAmVse3vCpfOGis8Qc5h"
+    "earmFcAKFvDeOk3390YJljzqHcT5V2rYeka8wzRrWG6Huh+S+cGhWdvXgs5nE1PE1i7gDYR7fuqbQAABy1xr0aaVc6bjEkLsCyZA"
+    "B3d+C4/gBu8haK5viJLslWoW2apFYG2IX94GjMqjv02fEKMwVB1u0cj/YT4NY0GdwhW3XPgP/o6WMp/duIbBVdfrXciwQE6bbiGb"
+    "/pJB5SYAjiSvV0mrpMgoze+4rOFWMVAS3pRLryctY970y0iYlXeJYJiYIB1tNWZbdTlcOE/8sggRbJY4uzeerO3tkI9SkOLmG+V+"
+    "8USrmkFVxcQE5ipO+yxFSFLluJ0MaKN1lzDo1TAecYewAAAAAAA"
+)
+
+
 st.set_page_config(
     page_title="Sistema de Asistencia y Nómina SaaS Multi-Empresa",
     layout="wide",
@@ -841,9 +990,9 @@ st.set_page_config(
 )
 
 render_html(
-    """
-    <link rel="icon" href="/app/static/icon-192.png">
-    <link rel="apple-touch-icon" href="/app/static/icon-192.png">
+    f"""
+    <link rel="icon" href="{LOGO_DEFAULT_EMBEBIDO}">
+    <link rel="apple-touch-icon" href="{LOGO_DEFAULT_EMBEBIDO}">
     """
 )
 
@@ -862,19 +1011,6 @@ _ancho_detectado = streamlit_js_eval(
 )
 if _ancho_detectado is not None:
     st.session_state.ancho_pantalla_px = _ancho_detectado
-
-# ES_CELULAR: el dispositivo físico es un celular (por ancho de pantalla o
-# por venir de la PWA), sin importar el rol de quien lo usa.
-# Logo por defecto de las animaciones (meteoritos, sello, anillo de
-# verificación) — puesto directo en el código a pedido tuyo, para que
-# no dependa de subir un archivo al repo ni de configurar nada en
-# Supabase antes de dar de alta una empresa nueva. Si más adelante
-# configuras un logo distinto desde el panel developer, ese reemplaza
-# a este; si nunca lo configuras, este es el que se usa siempre.
-LOGO_DEFAULT_EMBEBIDO = (
-    "https://cdn.phototourl.com/free/"
-    "2026-09-09-fcb898bb-b290-4343-8b74-4f1da38af026.png"
-)
 
 ES_CELULAR = MODO_MOVIL or (
     st.session_state.ancho_pantalla_px is not None
@@ -904,8 +1040,9 @@ if VISTA_TRABAJADOR_MOVIL:
         <meta name="theme-color" content="#111319">
         <meta name="apple-mobile-web-app-capable" content="yes">
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-        <link rel="apple-touch-icon" href="/app/static/icon-192.png">
-        <style>
+        <link rel="apple-touch-icon" href="__LOGO_PWA__">
+        <style>""".replace("__LOGO_PWA__", LOGO_DEFAULT_EMBEBIDO)
+        + """
             [data-testid="stSidebar"] {display: none;}
             [data-testid="stToolbar"] {display: none;}
             footer {display: none;}
@@ -2119,6 +2256,12 @@ def generar_plantilla_empleados(df_sedes):
          " 'Sedes disponibles')."),
         ("cargo", "Su puesto o cargo (ej. VENDEDOR, CONTADOR,"
          " ADMINISTRADOR)."),
+        ("fecha_ingreso", "Formato DD/MM/AAAA (ej. 15/01/2025). Si lo"
+         " dejas en blanco, se registra con la fecha de HOY — llénalo"
+         " si el trabajador ya venía trabajando desde antes, para que"
+         " su antigüedad y su liquidación (gratificación, CTS,"
+         " vacaciones) se calculen bien desde su fecha real de"
+         " ingreso, no desde que lo subiste al sistema."),
         ("password", "Su contraseña para marcar asistencia. Si lo"
          " dejas en blanco, se le asigna la contraseña por defecto del"
          " sistema automáticamente."),
@@ -2141,6 +2284,7 @@ def generar_plantilla_empleados(df_sedes):
         "NOMBRE APELLIDO (ejemplo, bórrame)",
         sede_ejemplo,
         "ASISTENTE",
+        "01/01/2025",
         "",
     ])
 
@@ -2149,6 +2293,7 @@ def generar_plantilla_empleados(df_sedes):
     ws.column_dimensions["C"].width = 24
     ws.column_dimensions["D"].width = 20
     ws.column_dimensions["E"].width = 16
+    ws.column_dimensions["F"].width = 16
 
     if df_sedes is not None and not df_sedes.empty:
         ws2 = wb.create_sheet("Sedes disponibles (referencia)")
@@ -2212,6 +2357,23 @@ def procesar_carga_masiva_empleados(supabase, archivo_excel):
             if password_fila.lower() == "nan":
                 password_fila = ""
 
+            # Fecha de ingreso: si la trae el Excel (texto DD/MM/AAAA o
+            # una celda ya con formato fecha de Excel), se respeta esa
+            # — solo si viene vacía se usa la fecha de hoy como antes.
+            fecha_ingreso_celda = fila.get("fecha_ingreso", None)
+            if pd.notna(fecha_ingreso_celda) and str(fecha_ingreso_celda).strip():
+                if hasattr(fecha_ingreso_celda, "strftime"):
+                    fecha_ingreso_final = fecha_ingreso_celda.strftime("%Y-%m-%d")
+                else:
+                    _fecha_parseada = _parsear_fecha_flexible(fecha_ingreso_celda)
+                    fecha_ingreso_final = (
+                        _fecha_parseada.strftime("%Y-%m-%d")
+                        if _fecha_parseada
+                        else hoy_peru().strftime("%Y-%m-%d")
+                    )
+            else:
+                fecha_ingreso_final = hoy_peru().strftime("%Y-%m-%d")
+
             datos_emp = {
                 "empresa_id": st.session_state.empresa_id,
                 "dni": dni,
@@ -2223,7 +2385,7 @@ def procesar_carga_masiva_empleados(supabase, archivo_excel):
                     password_fila if password_fila else PASSWORD_EMPLEADO_DEFAULT
                 ),
                 "horario_personalizado": "{}",
-                "fecha_ingreso": hoy_peru().strftime("%Y-%m-%d"),
+                "fecha_ingreso": fecha_ingreso_final,
             }
 
             if supabase:
@@ -2824,6 +2986,9 @@ def generar_excel_afpnet(df_empleados, df_asistencia, mes_sel, anio_sel, supabas
         periodo_bd = cargar_planilla_periodo_supabase(
             supabase, st.session_state.empresa_id, dni, prefix_periodo
         ) or {}
+        periodo_bd = completar_dias_falta_automatico(
+            periodo_bd, df_asistencia, emp["nombre"], mes_sel, anio_sel
+        )
         emp_asist = df_asistencia[df_asistencia["Empleado"] == emp["nombre"]]
         emp_asist_mes = (
             emp_asist[emp_asist["Fecha"].astype(str).str.startswith(prefix_periodo)]
@@ -2917,6 +3082,9 @@ def generar_borrador_plame(df_empleados, df_asistencia, mes_sel, anio_sel, supab
         periodo_bd = cargar_planilla_periodo_supabase(
             supabase, st.session_state.empresa_id, dni, prefix_periodo
         ) or {}
+        periodo_bd = completar_dias_falta_automatico(
+            periodo_bd, df_asistencia, emp["nombre"], mes_sel, anio_sel
+        )
         emp_asist = df_asistencia[df_asistencia["Empleado"] == emp["nombre"]]
         emp_asist_mes = (
             emp_asist[emp_asist["Fecha"].astype(str).str.startswith(prefix_periodo)]
@@ -4660,6 +4828,9 @@ def _construir_hoja_planilla(
                 supabase, st.session_state.empresa_id, dni, prefix_periodo
             )
             or {}
+        )
+        periodo_bd = completar_dias_falta_automatico(
+            periodo_bd, df_asistencia, emp["nombre"], mes_sel, anio_sel
         )
 
         emp_asist = df_asistencia[df_asistencia["Empleado"] == emp["nombre"]]
@@ -7111,7 +7282,9 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                         f_eval = date(anio_ind_sel, m_num, d)
                         f_str = f_eval.strftime("%Y-%m-%d")
 
-                        df_dia_emp = df_asist_emp[df_asist_emp["Fecha"] == f_str]
+                        df_dia_emp = df_asist_emp[
+                            df_asist_emp["Fecha"].astype(str).str.slice(0, 10) == f_str
+                        ]
                         ent_reg = df_dia_emp[
                             df_dia_emp["Tipo Marcación"] == "Entrada"
                         ]
@@ -7124,6 +7297,18 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 "Estado": est.upper(),
                                 "Nivel": val_y,
                             })
+                        elif f_eval > hoy_peru():
+                            pass  # día futuro: no hay nada que marcar todavía
+                        elif f_str in FERIADOS_OFICIALES:
+                            pass  # feriado oficial: no cuenta como falta
+                        elif DIAS_SEMANA_MAP[f_eval.weekday()] in st.session_state.dias_laborables:
+                            # Día laborable, sin ninguna marcación de
+                            # Entrada: es una falta real.
+                            timeline_data.append({
+                                "Día": d,
+                                "Estado": "FALTA",
+                                "Nivel": 0.5,
+                            })
 
                     if timeline_data:
                         df_tl = pd.DataFrame(timeline_data)
@@ -7135,14 +7320,15 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                             color_discrete_map={
                                 "PUNTUAL": "#2EB67D",
                                 "TARDANZA": "#FF8C00",
+                                "FALTA": "#FF6B6B",
                             },
                             height=260,
                         )
                         fig_tl.update_layout(
                             yaxis=dict(
                                 tickmode="array",
-                                tickvals=[1, 2],
-                                ticktext=["TARDANZA", "PUNTUAL"],
+                                tickvals=[0.5, 1, 2],
+                                ticktext=["FALTA", "TARDANZA", "PUNTUAL"],
                             ),
                             xaxis=dict(dtick=1),
                             margin=dict(l=10, r=10, t=10, b=10),
@@ -8622,6 +8808,10 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                             )
                             or {}
                         )
+                        periodo_bd_prev = completar_dias_falta_automatico(
+                            periodo_bd_prev, df_asistencia, emp_preview_sel,
+                            mes_planilla, anio_planilla,
+                        )
                         calc_prev = calcular_planilla_trabajador(
                             fila_prev, dias_lab_prev, min_tard_prev,
                             min_extra_dia_prev, periodo_bd_prev,
@@ -9150,6 +9340,10 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 prefix_periodo_planilla,
                             )
                             or {}
+                        )
+                        datos_periodo_previos = completar_dias_falta_automatico(
+                            datos_periodo_previos, df_asistencia,
+                            empleado_sel_var, mes_planilla, anio_planilla,
                         )
 
                         # Sugerencias automáticas (gratificación, CTS,
