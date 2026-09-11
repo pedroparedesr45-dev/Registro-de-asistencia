@@ -6594,24 +6594,26 @@ elif opcion == "🔐 Panel de Gestión / Admin":
         st.title("🔐 Acceso Administrativo")
         cargar_pin_developer_global(supabase)
 
-        modo_acceso = st.radio(
-            "¿Cómo quieres entrar?",
-            ["Empresa específica (Admin / SuperAdmin)", "Developer (acceso global)"],
-            horizontal=True,
-            help=(
-                "Developer es un acceso GLOBAL, no pertenece a ninguna"
-                " empresa — sirve para crear empresas nuevas, cambiar"
-                " PINs de cualquier empresa, y habilitar Planilla/"
-                " Honorarios en Producción cuando estén listos."
-            ),
-        )
+        df_e_disponibles = df_empresas
 
-        if modo_acceso == "Developer (acceso global)":
-            pin_dev_global = st.text_input(
-                "Ingrese PIN Developer:", type="password", key="pin_dev_global"
+        if df_e_disponibles.empty:
+            # Base de datos 100% vacía: todavía no existe ninguna
+            # empresa. Se deja entrar solo con el PIN Developer para
+            # crear la primera — al no haber ninguna empresa marcada
+            # como entorno de desarrollo todavía, esta es la ÚNICA
+            # excepción donde el PIN Developer funciona sin tener una
+            # empresa de desarrollo seleccionada.
+            st.info(
+                "No hay ninguna empresa registrada todavía en esta base"
+                " de datos. Ingresa el PIN Developer para entrar y crear"
+                " la primera (créala con Entorno = Desarrollo, para"
+                " poder seguir usando este PIN después)."
             )
-            if st.button("Ingresar como Developer"):
-                if clave_coincide(pin_dev_global, st.session_state.pin_developer):
+            pin_bootstrap = st.text_input(
+                "Ingrese PIN Developer:", type="password", key="pin_bootstrap"
+            )
+            if st.button("Ingresar al Panel"):
+                if clave_coincide(pin_bootstrap, st.session_state.pin_developer):
                     st.session_state.autenticado = True
                     st.session_state.rol = "master"
                     st.session_state.developer_global = True
@@ -6619,43 +6621,60 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                 else:
                     st.error("PIN Incorrecto.")
         else:
-            df_e_disponibles = df_empresas
+            empresa_admin = st.selectbox(
+                "Seleccione Empresa:",
+                df_e_disponibles["empresa_id"].unique(),
+            )
+            if empresa_admin:
+                cargar_configuracion_sistema(supabase, empresa_admin)
 
-            if df_e_disponibles.empty:
-                st.info(
-                    "No hay ninguna empresa registrada todavía en esta"
-                    " base de datos. Usa 'Developer (acceso global)'"
-                    " arriba para entrar y crear la primera."
-                )
-            else:
-                empresa_admin = st.selectbox(
-                    "Seleccione Empresa:",
-                    df_e_disponibles["empresa_id"].unique(),
-                )
+            # Automático: la empresa elegida ¿es la de Desarrollo? Esto
+            # es lo que decide, SIN ningún selector aparte, si el PIN
+            # Developer va a funcionar aquí o no.
+            es_empresa_dev = False
+            if empresa_admin:
+                _fila_emp_sel = df_e_disponibles[
+                    df_e_disponibles["empresa_id"] == empresa_admin
+                ]
+                if not _fila_emp_sel.empty:
+                    es_empresa_dev = (
+                        str(_fila_emp_sel.iloc[0].get("entorno", "PROD"))
+                        == "DEV"
+                    )
+
+            pin = st.text_input("Ingrese PIN de Acceso:", type="password")
+
+            if st.button("Ingresar al Panel"):
                 if empresa_admin:
-                    cargar_configuracion_sistema(supabase, empresa_admin)
-                pin = st.text_input("Ingrese PIN de Acceso:", type="password")
-
-                if st.button("Ingresar al Panel"):
-                    if empresa_admin:
-                        st.session_state.empresa_id = empresa_admin
-                        st.session_state.developer_global = False
-                        if clave_coincide(pin, st.session_state.pin_admin):
-                            st.session_state.autenticado = True
-                            st.session_state.rol = "admin"
-                            st.rerun()
-                        elif clave_coincide(pin, st.session_state.pin_visor):
-                            st.session_state.autenticado = True
-                            st.session_state.rol = "visor"
-                            st.rerun()
-                        elif clave_coincide(pin, st.session_state.pin_master):
-                            st.session_state.autenticado = True
-                            st.session_state.rol = "master"
-                            st.rerun()
-                        else:
-                            st.error("PIN Incorrecto.")
+                    st.session_state.empresa_id = empresa_admin
+                    st.session_state.developer_global = False
+                    if clave_coincide(pin, st.session_state.pin_admin):
+                        st.session_state.autenticado = True
+                        st.session_state.rol = "admin"
+                        st.rerun()
+                    elif clave_coincide(pin, st.session_state.pin_visor):
+                        st.session_state.autenticado = True
+                        st.session_state.rol = "visor"
+                        st.rerun()
+                    elif clave_coincide(pin, st.session_state.pin_master):
+                        st.session_state.autenticado = True
+                        st.session_state.rol = "master"
+                        st.rerun()
+                    elif es_empresa_dev and clave_coincide(
+                        pin, st.session_state.pin_developer
+                    ):
+                        # El PIN Developer SOLO funciona si la empresa
+                        # elegida es la marcada como Desarrollo — en
+                        # cualquier empresa de Producción, este mismo
+                        # PIN cae aquí y se rechaza como incorrecto.
+                        st.session_state.autenticado = True
+                        st.session_state.rol = "master"
+                        st.session_state.developer_global = True
+                        st.rerun()
                     else:
-                        st.error("No hay empresas disponibles.")
+                        st.error("PIN Incorrecto.")
+                else:
+                    st.error("No hay empresas disponibles.")
     else:
         from streamlit_autorefresh import st_autorefresh
 
