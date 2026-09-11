@@ -1379,11 +1379,18 @@ if "autenticado" not in st.session_state:
 if "rol" not in st.session_state:
     st.session_state.rol = None
 if "pin_admin" not in st.session_state:
-    st.session_state.pin_admin = st.secrets.get("PIN_ADMIN", "1234")
+    st.session_state.pin_admin = st.secrets.get("PIN_ADMIN", "5678")
 if "pin_visor" not in st.session_state:
-    st.session_state.pin_visor = st.secrets.get("PIN_VISOR", "5678")
+    st.session_state.pin_visor = st.secrets.get("PIN_VISOR", "2468")
 if "pin_master" not in st.session_state:
-    st.session_state.pin_master = st.secrets.get("PIN_MASTER", "9999")
+    # "pin_master" ahora es el PIN de SuperAdmin — un rol POR EMPRESA
+    # (distinto del PIN de Developer, que es global, ver
+    # cargar_pin_developer_global()).
+    st.session_state.pin_master = st.secrets.get("PIN_SUPERADMIN", "1234")
+if "developer_global" not in st.session_state:
+    st.session_state.developer_global = False
+if "planilla_habilitada" not in st.session_state:
+    st.session_state.planilla_habilitada = False
 if "fecha_inicio_sistema" not in st.session_state:
     st.session_state.fecha_inicio_sistema = date(2026, 1, 1)
 
@@ -1917,6 +1924,44 @@ def enviar_backup_email(asunto, cuerpo, adjuntos):
         server.send_message(msg)
 
 
+EMPRESA_ID_GLOBAL = "__GLOBAL__"  # fila especial en configuracion_sistema
+# para guardar ajustes que NO pertenecen a ninguna empresa en particular
+# (el PIN de Developer, que ahora es global — no por empresa).
+
+
+def cargar_pin_developer_global(supabase):
+    """Carga el PIN de Developer desde la fila global especial (no
+    pertenece a ninguna empresa) — si nunca se guardó uno, usa el de
+    Secrets, y si tampoco hay, "9999" por defecto."""
+    if "pin_developer" not in st.session_state:
+        st.session_state.pin_developer = st.secrets.get("PIN_DEVELOPER", "9999")
+    if not supabase:
+        return
+    try:
+        res = (
+            supabase.table("configuracion_sistema")
+            .select("pin_developer_global")
+            .eq("empresa_id", EMPRESA_ID_GLOBAL)
+            .limit(1)
+            .execute()
+        )
+        if res.data and res.data[0].get("pin_developer_global"):
+            st.session_state.pin_developer = res.data[0]["pin_developer_global"]
+    except Exception:
+        pass
+
+
+def guardar_pin_developer_global(supabase, pin_nuevo_hash):
+    """Guarda el PIN de Developer nuevo en la fila global — a partir de
+    ahora aplica para TODAS las empresas, no es por empresa."""
+    if not supabase:
+        raise RuntimeError("El cliente de Supabase no está configurado.")
+    supabase.table("configuracion_sistema").upsert(
+        {"empresa_id": EMPRESA_ID_GLOBAL, "pin_developer_global": pin_nuevo_hash},
+        on_conflict="empresa_id",
+    ).execute()
+
+
 @st.cache_data(ttl=30)
 def cargar_configuracion_sistema(_supabase, empresa_id):
     """Carga PINs, clave de Excel y contraseña por defecto desde Supabase
@@ -1957,6 +2002,9 @@ def cargar_configuracion_sistema(_supabase, empresa_id):
             )
             if cfg.get("logo_globos_url"):
                 st.session_state.logo_globos_url = cfg["logo_globos_url"]
+            st.session_state.planilla_habilitada = bool(
+                cfg.get("planilla_habilitada", False)
+            )
     except Exception:
         pass  # si falla, se sigue usando lo que ya había cargado
 
@@ -4192,11 +4240,12 @@ if not VISTA_TRABAJADOR_MOVIL:
 
     if not st.session_state.dev_entorno_desbloqueado:
         # Candado discreto (sin texto explicativo) que pide el PIN
-        # Developer para revelar los ajustes de developer (logo de las
-        # animaciones, diagnóstico de Nivel 1) — no es un selector de
-        # entorno Sandbox (se quitó, ver nota más abajo). La versión
-        # celular no se toca — sigue igual que antes.
+        # Developer GLOBAL (no pertenece a ninguna empresa) para
+        # revelar los ajustes de developer (logo de las animaciones,
+        # diagnóstico de Nivel 1, gestión global de empresas, Planilla/
+        # Honorarios en construcción). La versión celular no se toca.
         st.session_state.entorno = "PROD"
+        cargar_pin_developer_global(supabase)
         with st.sidebar.expander("🔒", expanded=False):
             _pin_candado_dev = st.text_input(
                 "PIN",
@@ -4205,8 +4254,9 @@ if not VISTA_TRABAJADOR_MOVIL:
                 label_visibility="collapsed",
             )
             if st.button("🔓", key="btn_candado_dev"):
-                if clave_coincide(_pin_candado_dev, st.session_state.pin_master):
+                if clave_coincide(_pin_candado_dev, st.session_state.pin_developer):
                     st.session_state.dev_entorno_desbloqueado = True
+                    st.session_state.developer_global = True
                     st.rerun()
                 else:
                     st.error("PIN Incorrecto.")
@@ -5787,6 +5837,32 @@ def render_modulo_empresas():
                 "Entorno:", ["PROD", "DEV"], index=0 if v_emp_ent == "PROD" else 1
             )
 
+            if is_edit_emp and st.session_state.developer_global:
+                st.divider()
+                cargar_configuracion_sistema(supabase, emp_sel_ed)
+                ed_planilla_hab = st.checkbox(
+                    "💰 Habilitar Planilla y Honorarios para esta empresa",
+                    value=st.session_state.get("planilla_habilitada", False),
+                    help=(
+                        "Solo tú (Developer) puedes activar esto. Mientras"
+                        " esté desactivado, esta empresa ve un mensaje de"
+                        " 'en desarrollo' en vez de esas pestañas —"
+                        " actívalo cuando el módulo esté listo para esta"
+                        " empresa."
+                    ),
+                )
+                if st.button("💾 Guardar habilitación de Planilla"):
+                    try:
+                        guardar_configuracion_sistema(
+                            supabase, emp_sel_ed,
+                            planilla_habilitada=ed_planilla_hab,
+                        )
+                        st.success("✅ Guardado.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"No se pudo guardar: {e}")
+                st.divider()
+
             col_eb1, col_eb2 = st.columns(2)
 
             with col_eb1:
@@ -6031,18 +6107,13 @@ if opcion == "⏰ Marcar Asistencia":
         col_acc1, col_acc2 = st.columns(2)
         with col_acc1:
             # Selector desplegable de empresa (antes era un campo de texto
-            # libre). Se filtra SOLO por el modo en el que esté el usuario:
-            # si no inició sesión como Developer (PIN 9999), solo ve las
-            # empresas de PRODUCCIÓN; si sí inició sesión como Developer,
-            # solo ve las de DESARROLLO/Sandbox. Aplica igual en celular y
-            # en PC — no depende del toggle abierto de entorno del sidebar.
-            _dev_autenticado = st.session_state.get("rol") == "master"
-            _entorno_login_empleado = "DEV" if _dev_autenticado else "PROD"
-
+            # libre). ANTES filtraba por entorno DEV/PROD según el rol —
+            # eso era un resto de la función de "Entorno de Ejecución"
+            # que ya quitamos (no la usas, tu flujo real es con un repo
+            # de pruebas aparte). Se me había pasado esta parte al
+            # sacarla — ahora simplemente muestra TODAS las empresas
+            # registradas en esta base de datos, sin filtrar por rol.
             df_e_disponibles_login = cargar_empresas()
-            df_e_disponibles_login = df_e_disponibles_login[
-                df_e_disponibles_login["entorno"] == _entorno_login_empleado
-            ]
             opciones_empresa_login = (
                 list(df_e_disponibles_login["empresa_id"].astype(str).unique())
                 if not df_e_disponibles_login.empty
@@ -6521,39 +6592,70 @@ if opcion == "⏰ Marcar Asistencia":
 elif opcion == "🔐 Panel de Gestión / Admin":
     if not st.session_state.autenticado:
         st.title("🔐 Acceso Administrativo")
+        cargar_pin_developer_global(supabase)
 
-        df_e_disponibles = df_empresas[
-            df_empresas["entorno"] == st.session_state.entorno
-        ]
-        empresa_admin = st.selectbox(
-            f"Seleccione Empresa ({st.session_state.entorno}):",
-            df_e_disponibles["empresa_id"].unique()
-            if not df_e_disponibles.empty
-            else [],
+        modo_acceso = st.radio(
+            "¿Cómo quieres entrar?",
+            ["Empresa específica (Admin / SuperAdmin)", "Developer (acceso global)"],
+            horizontal=True,
+            help=(
+                "Developer es un acceso GLOBAL, no pertenece a ninguna"
+                " empresa — sirve para crear empresas nuevas, cambiar"
+                " PINs de cualquier empresa, y habilitar Planilla/"
+                " Honorarios en Producción cuando estén listos."
+            ),
         )
-        if empresa_admin:
-            cargar_configuracion_sistema(supabase, empresa_admin)
-        pin = st.text_input("Ingrese PIN de Acceso:", type="password")
 
-        if st.button("Ingresar al Panel"):
-            if empresa_admin:
-                st.session_state.empresa_id = empresa_admin
-                if clave_coincide(pin, st.session_state.pin_admin):
-                    st.session_state.autenticado = True
-                    st.session_state.rol = "admin"
-                    st.rerun()
-                elif clave_coincide(pin, st.session_state.pin_visor):
-                    st.session_state.autenticado = True
-                    st.session_state.rol = "visor"
-                    st.rerun()
-                elif clave_coincide(pin, st.session_state.pin_master):
+        if modo_acceso == "Developer (acceso global)":
+            pin_dev_global = st.text_input(
+                "Ingrese PIN Developer:", type="password", key="pin_dev_global"
+            )
+            if st.button("Ingresar como Developer"):
+                if clave_coincide(pin_dev_global, st.session_state.pin_developer):
                     st.session_state.autenticado = True
                     st.session_state.rol = "master"
+                    st.session_state.developer_global = True
                     st.rerun()
                 else:
                     st.error("PIN Incorrecto.")
+        else:
+            df_e_disponibles = df_empresas
+
+            if df_e_disponibles.empty:
+                st.info(
+                    "No hay ninguna empresa registrada todavía en esta"
+                    " base de datos. Usa 'Developer (acceso global)'"
+                    " arriba para entrar y crear la primera."
+                )
             else:
-                st.error("No hay empresas disponibles en este entorno.")
+                empresa_admin = st.selectbox(
+                    "Seleccione Empresa:",
+                    df_e_disponibles["empresa_id"].unique(),
+                )
+                if empresa_admin:
+                    cargar_configuracion_sistema(supabase, empresa_admin)
+                pin = st.text_input("Ingrese PIN de Acceso:", type="password")
+
+                if st.button("Ingresar al Panel"):
+                    if empresa_admin:
+                        st.session_state.empresa_id = empresa_admin
+                        st.session_state.developer_global = False
+                        if clave_coincide(pin, st.session_state.pin_admin):
+                            st.session_state.autenticado = True
+                            st.session_state.rol = "admin"
+                            st.rerun()
+                        elif clave_coincide(pin, st.session_state.pin_visor):
+                            st.session_state.autenticado = True
+                            st.session_state.rol = "visor"
+                            st.rerun()
+                        elif clave_coincide(pin, st.session_state.pin_master):
+                            st.session_state.autenticado = True
+                            st.session_state.rol = "master"
+                            st.rerun()
+                        else:
+                            st.error("PIN Incorrecto.")
+                    else:
+                        st.error("No hay empresas disponibles.")
     else:
         from streamlit_autorefresh import st_autorefresh
 
@@ -6634,10 +6736,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
             "👤 Reporte Limpio por Trabajador",
         ]
 
-        es_master_o_dev = (
-            st.session_state.rol == "master"
-            or st.session_state.entorno == "DEV"
-        )
+        es_master_o_dev = st.session_state.developer_global
 
         if st.session_state.rol in ["admin", "master"] and not ES_CELULAR:
             if es_master_o_dev:
@@ -8463,90 +8562,111 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                             )
 
                 with subtab_seguridad:
-                    with st.container(border=True):
-                        st.markdown("#### 🔑 Administración de Claves de Acceso")
-                        st.caption(
-                            "Estos cambios se guardan en Supabase y aplican a"
-                            f" la empresa `{st.session_state.empresa_id}`."
-                        )
+                    if st.session_state.rol == "admin" and not st.session_state.developer_global:
                         st.info(
-                            "🔒 Por seguridad, los PINs y contraseñas ya no se"
-                            " muestran en pantalla ni se guardan como texto"
-                            " plano (se guarda un hash). Deja un campo en"
-                            " blanco si no quieres cambiar esa clave."
+                            "🔒 Cambiar claves de acceso es exclusivo de"
+                            " SuperAdmin y Developer."
                         )
+                    else:
+                        with st.container(border=True):
+                            st.markdown("#### 🔑 Administración de Claves de Acceso")
+                            st.caption(
+                                "Estos cambios se guardan en Supabase y"
+                                " aplican a la empresa"
+                                f" `{st.session_state.empresa_id}`."
+                            )
+                            st.info(
+                                "🔒 Por seguridad, los PINs y contraseñas ya"
+                                " no se muestran en pantalla ni se guardan"
+                                " como texto plano (se guarda un hash)."
+                                " Deja un campo en blanco si no quieres"
+                                " cambiar esa clave."
+                            )
 
-                        p_admin = st.text_input(
-                            "Nuevo PIN SuperAdmin (déjalo en blanco para no"
-                            " cambiarlo):",
-                            value="",
-                            type="password",
-                        )
-                        p_visor = st.text_input(
-                            "Nuevo PIN Admin (déjalo en blanco para no"
-                            " cambiarlo):",
-                            value="",
-                            type="password",
-                        )
-
-                        if st.session_state.rol == "master":
-                            p_master = st.text_input(
-                                "Nuevo PIN Developer (déjalo en blanco para no"
+                            p_superadmin = st.text_input(
+                                "Nuevo PIN SuperAdmin (déjalo en blanco"
+                                " para no cambiarlo):",
+                                value="",
+                                type="password",
+                            )
+                            p_admin = st.text_input(
+                                "Nuevo PIN Admin (déjalo en blanco para no"
                                 " cambiarlo):",
                                 value="",
                                 type="password",
                             )
-                        else:
-                            p_master = ""
-                            st.caption(
-                                "🔒 El PIN Developer solo es visible y editable"
-                                " para quien ingresa con esa clave."
-                            )
 
-                        if st.button("Guardar Nuevas Claves", type="primary"):
-                            campos_a_guardar = {}
-                            if p_admin:
-                                campos_a_guardar["pin_admin"] = _hash_clave(
-                                    p_admin
-                                )
-                            if p_visor:
-                                campos_a_guardar["pin_visor"] = _hash_clave(
-                                    p_visor
-                                )
-                            if p_master:
-                                campos_a_guardar["pin_master"] = _hash_clave(
-                                    p_master
-                                )
-
-                            if not campos_a_guardar:
-                                st.info(
-                                    "No escribiste ningún valor nuevo, no se"
-                                    " guardó nada."
+                            if st.session_state.developer_global:
+                                st.divider()
+                                p_developer = st.text_input(
+                                    "Nuevo PIN Developer — GLOBAL, aplica"
+                                    " para TODAS las empresas (déjalo en"
+                                    " blanco para no cambiarlo):",
+                                    value="",
+                                    type="password",
                                 )
                             else:
-                                try:
-                                    guardar_configuracion_sistema(
-                                        supabase,
-                                        st.session_state.empresa_id,
-                                        **campos_a_guardar,
+                                p_developer = ""
+                                st.caption(
+                                    "🔒 El PIN Developer es global (no es"
+                                    " por empresa) y solo se puede cambiar"
+                                    " entrando con 'Developer (acceso"
+                                    " global)' desde la pantalla de"
+                                    " acceso."
+                                )
+
+                            if st.button("Guardar Nuevas Claves", type="primary"):
+                                campos_a_guardar = {}
+                                if p_superadmin:
+                                    campos_a_guardar["pin_master"] = _hash_clave(
+                                        p_superadmin
                                     )
-                                    for campo, valor in (
-                                        campos_a_guardar.items()
-                                    ):
-                                        setattr(
-                                            st.session_state, campo, valor
+                                if p_admin:
+                                    campos_a_guardar["pin_admin"] = _hash_clave(
+                                        p_admin
+                                    )
+
+                                guardo_algo = False
+                                if campos_a_guardar:
+                                    try:
+                                        guardar_configuracion_sistema(
+                                            supabase,
+                                            st.session_state.empresa_id,
+                                            **campos_a_guardar,
                                         )
-                                    st.success(
-                                        "✅ Configuración de seguridad"
-                                        " actualizada y guardada en Supabase."
-                                    )
-                                except Exception as e_cfg:
-                                    st.error(
-                                        f"No se pudo guardar en Supabase:"
-                                        f" {e_cfg}"
+                                        guardo_algo = True
+                                    except Exception as e:
+                                        st.error(f"No se pudo guardar: {e}")
+                                if p_developer:
+                                    try:
+                                        guardar_pin_developer_global(
+                                            supabase, _hash_clave(p_developer)
+                                        )
+                                        guardo_algo = True
+                                    except Exception as e:
+                                        st.error(f"No se pudo guardar: {e}")
+
+                                if guardo_algo:
+                                    st.success("✅ Clave(s) actualizada(s).")
+                                    st.rerun()
+                                else:
+                                    st.info(
+                                        "No escribiste ningún valor nuevo,"
+                                        " no se guardó nada."
                                     )
 
             with tab_objs[5]:
+                if not (
+                    st.session_state.developer_global
+                    or st.session_state.planilla_habilitada
+                ):
+                    st.info(
+                        "🚧 **Planilla y Honorarios están en desarrollo**"
+                        " — todavía no se habilitaron para esta empresa."
+                        " El Developer los puede activar desde el acceso"
+                        " global cuando estén listos."
+                    )
+                    st.stop()
                 st.subheader("💰 Planilla — Datos de Asistencia por Período")
                 st.caption(
                     "Solo visible para SuperAdmin y Developer. Días"
