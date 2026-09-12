@@ -483,7 +483,8 @@ def render_animacion_verificando(logo_url):
     así que desaparece sola en el siguiente rerun, sin necesitar ningún
     JavaScript de limpieza que se pueda romper."""
     html = f"""
-    <div style="position:fixed; inset:0; z-index:9998;
+    <div style="position:fixed; top:0; left:0; width:100vw; height:100vh;
+        z-index:999999;
         background:rgba(10,14,26,0.95); display:flex;
         flex-direction:column; align-items:center; justify-content:center;
         animation:fac-desvanecer-verif 0.4s ease 1.6s forwards;">
@@ -587,7 +588,8 @@ def render_animacion_marcado_exitoso(logo_url, hora_texto, estado="Puntual", rac
         else ""
     )
     html = f"""
-    <div style="position:fixed; inset:0; z-index:9998;
+    <div style="position:fixed; top:0; left:0; width:100vw; height:100vh;
+        z-index:999999;
         display:flex; align-items:center; justify-content:center;
         background:rgba(10,14,26,0.6); pointer-events:none;
         animation:fac-desvanecer-sello 0.4s ease 2.2s forwards;">
@@ -626,6 +628,89 @@ def render_animacion_marcado_exitoso(logo_url, hora_texto, estado="Puntual", rac
     """
     render_html(html)
     render_sonido_sello(delay_ms=200, grave=not es_tardanza)
+
+
+def render_tarjetas_asistencia_hoy(
+    df_lista_empleados, mapa_estado, mapa_hora, cols_por_fila=4,
+    mapa_salida_estado=None, mapa_salida_hora=None, mapa_horas_extra=None,
+):
+    """Dibuja la cuadrícula de tarjetas de '¿Quién marcó hoy?' — una
+    tarjeta por trabajador con su nombre, si ya marcó Entrada (Puntual/
+    Tardanza/Sin Marcar) y, si ya marcó Salida también, un segundo
+    renglón con eso: 'Salida Puntual' (verde, salió a su hora oficial
+    o después) o 'Salida Temprano' (ámbar, se fue antes) — más la Hora
+    Extra si la empresa la reconoce (interruptor en Ajustes) y sí
+    trabajó de más ese día."""
+    mapa_salida_estado = mapa_salida_estado or {}
+    mapa_salida_hora = mapa_salida_hora or {}
+    mapa_horas_extra = mapa_horas_extra or {}
+    _permite_hextra = st.session_state.get("permitir_horas_extra", False)
+
+    lista = list(df_lista_empleados.sort_values("nombre").iterrows())
+    for i in range(0, len(lista), cols_por_fila):
+        fila_cols = st.columns(cols_por_fila)
+        for j, (_, emp) in enumerate(lista[i:i + cols_por_fila]):
+            nombre_emp = emp["nombre"]
+            estado = mapa_estado.get(nombre_emp)
+            if estado == "Puntual":
+                color, icono, texto = "#00B050", "✅", "PUNTUAL"
+            elif estado == "Tardanza":
+                color, icono, texto = "#FF8C00", "🟠", "TARDANZA"
+            else:
+                color, icono, texto = "#C00000", "⏳", "SIN MARCAR"
+            hora = mapa_hora.get(nombre_emp, "")
+
+            # Renglón de Salida (solo si ya marcó) — verde si fue
+            # puntual, ámbar si se fue antes de su hora oficial.
+            salida_html = ""
+            estado_salida = mapa_salida_estado.get(nombre_emp)
+            if estado_salida:
+                hora_salida = mapa_salida_hora.get(nombre_emp, "")
+                min_extra = mapa_horas_extra.get(nombre_emp, 0)
+                if estado_salida == "Puntual":
+                    color_sal, texto_sal = "#00B050", "SALIDA PUNTUAL"
+                else:
+                    color_sal, texto_sal = "#FFAB40", "SALIDA TEMPRANO"
+
+                extra_html = ""
+                if _permite_hextra and min_extra > 0:
+                    extra_html = (
+                        f'<span style="color:#a371f7; font-weight:700;">'
+                        f" · ⏱ +{min_extra} min extra</span>"
+                    )
+
+                salida_html = f"""
+                <div style="font-size:11px; color:{color_sal};
+                    font-weight:700; margin-top:4px;">
+                    🚪 {texto_sal}{extra_html}
+                </div>
+                <div style="font-size:10px; color:#8b949e;">
+                    {hora_salida}
+                </div>
+                """
+
+            with fila_cols[j]:
+                render_html(f"""
+                <div style="border:2px solid {color};
+                    border-radius:12px; padding:10px 12px;
+                    margin-bottom:8px;
+                    background:rgba(255,255,255,0.03);">
+                    <div style="font-size:13px; font-weight:600;
+                        color:#e6edf3; white-space:nowrap;
+                        overflow:hidden; text-overflow:ellipsis;">
+                        {nombre_emp}
+                    </div>
+                    <div style="font-size:12px; color:{color};
+                        font-weight:700; margin-top:4px;">
+                        {icono} {texto}
+                    </div>
+                    <div style="font-size:11px; color:#8b949e;
+                        margin-top:2px;">
+                        {hora if hora else "&nbsp;"}
+                    </div>
+                    {salida_html}
+                </div>
+                """)
 
 
 def calcular_racha_puntualidad(df_asistencia, nombre_empleado):
@@ -1964,20 +2049,25 @@ def guardar_pin_developer_global(supabase, pin_nuevo_hash):
     ).execute()
 
 
-@st.cache_data(ttl=30)
 def cargar_configuracion_sistema(_supabase, empresa_id):
     """Carga PINs, clave de Excel y contraseña por defecto desde Supabase
     para esta empresa (tabla configuracion_sistema). Si no hay fila
     guardada todavía, deja los valores que ya estaban en session_state
     (los de Secrets o los de respaldo).
 
-    OPTIMIZACIÓN: cacheado 30 segundos — esto casi no cambia de un
-    momento a otro (PINs, régimen laboral, logo), así que no hace falta
-    volver a pedirlo a Supabase en cada actualización de pantalla. El
-    parámetro se llama '_supabase' (con guion bajo) a propósito: así le
-    decimos a Streamlit que NO intente cachear basándose en ese objeto
-    (los clientes de Supabase no se pueden "hashear" de forma
-    confiable) — solo cachea según el empresa_id."""
+    BUG SERIO YA CORREGIDO: esta función SÍ tenía @st.cache_data(ttl=30)
+    antes — el problema es que esa caché es GLOBAL (compartida entre
+    TODOS los usuarios/pestañas de la app), mientras que lo que hace
+    esta función es escribir en st.session_state, que es POR SESIÓN.
+    Si dos personas (o dos pestañas tuyas) pedían la config de la misma
+    empresa casi al mismo tiempo, la segunda podía recibir un "no
+    ejecutes de nuevo, ya se hizo" del caché — pero eso significa que
+    SU PROPIA sesión nunca quedaba con el PIN actualizado, aunque
+    Streamlit "creyera" que ya se cargó. Por eso a veces fallaba el PIN
+    aunque estuviera bien escrito, y no era un problema de cuándo se
+    guardó, sino de cuándo se LEYÓ. Se quitó la caché de esta función
+    específica — el costo de rendimiento es mínimo (no se llama a cada
+    tecla) y la corrección del PIN es lo más importante."""
     if not _supabase:
         return
     try:
@@ -6758,6 +6848,47 @@ elif opcion == "🔐 Panel de Gestión / Admin":
             f" ({st.session_state.entorno})"
         )
 
+        if st.session_state.developer_global:
+            # Selector GLOBAL (no encerrado en una sola pestaña) — así
+            # cualquier cambio que hagas en CUALQUIER pestaña (Ajustes,
+            # Personal, Planilla, lo que sea) se guarda de verdad en la
+            # empresa que elegiste aquí, no en DEV_TEST por error (bug
+            # real ya corregido: antes este selector solo vivía dentro
+            # de "Reporte Limpio" y se revertía al salir de esa
+            # pestaña — si cambiabas un PIN desde Ajustes mientras
+            # estabas "prestado" a otra empresa, en realidad se
+            # guardaba en DEV_TEST).
+            _todas_las_empresas_glob = cargar_empresas()
+            if not _todas_las_empresas_glob.empty:
+                _opciones_emp_glob = list(
+                    _todas_las_empresas_glob["empresa_id"].unique()
+                )
+                _empresa_override_glob = st.selectbox(
+                    "🧪 Developer: trabajar sobre la empresa",
+                    _opciones_emp_glob,
+                    index=(
+                        _opciones_emp_glob.index(st.session_state.empresa_id)
+                        if st.session_state.empresa_id in _opciones_emp_glob
+                        else 0
+                    ),
+                    help=(
+                        "Exclusivo Developer — aquí puedes elegir CUALQUIER"
+                        " empresa (incluidas las de Producción) y todo lo"
+                        " que hagas en cualquier pestaña de aquí en"
+                        " adelante (Ajustes, Personal, Planilla, etc.)"
+                        " aplica a la empresa que elijas, hasta que"
+                        " cambies de nuevo o cierres sesión."
+                    ),
+                    key="selector_empresa_developer_global",
+                )
+                if _empresa_override_glob != st.session_state.empresa_id:
+                    st.session_state.empresa_id = _empresa_override_glob
+                    cargar_configuracion_sistema(supabase, _empresa_override_glob)
+                    df_sedes, df_empleados, df_asistencia = cargar_datos(
+                        _empresa_override_glob
+                    )
+                    st.rerun()
+
         _tablas_locales = st.session_state.get("tablas_en_modo_local", set())
         if _tablas_locales:
             _nombres_visibles = {
@@ -6785,7 +6916,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
 
         es_master_o_dev = st.session_state.developer_global
 
-        if st.session_state.rol in ["admin", "master"] and not ES_CELULAR:
+        if st.session_state.rol == "master" and not ES_CELULAR:
             if es_master_o_dev:
                 tab_gestion_nombre = "🏢 Gestión de Empresas y Sedes"
             else:
@@ -6890,6 +7021,49 @@ elif opcion == "🔐 Panel de Gestión / Admin":
 
             st.divider()
 
+            # Datos de HOY para las tarjetas de cada sede (Entrada +
+            # Salida + Horas Extra, según corresponda) — el bloque
+            # global "¿Quién marcó hoy?" se quitó a pedido tuyo, pero
+            # este cálculo se queda porque cada sede sí lo usa abajo.
+            _hoy_str_dash = ahora_peru().strftime("%Y-%m-%d")
+            _asist_hoy_todos = df_asistencia[
+                df_asistencia["Fecha"].astype(str).str.slice(0, 10) == _hoy_str_dash
+            ]
+            _asist_hoy_entrada = _asist_hoy_todos[
+                _asist_hoy_todos["Tipo Marcación"] == "Entrada"
+            ]
+            _asist_hoy_salida = _asist_hoy_todos[
+                _asist_hoy_todos["Tipo Marcación"] == "Salida"
+            ]
+            _map_estado_hoy = {}
+            _map_hora_hoy = {}
+            if not _asist_hoy_entrada.empty:
+                for _, _fila_hoy in _asist_hoy_entrada.iterrows():
+                    _map_estado_hoy[_fila_hoy["Empleado"]] = _fila_hoy["Estado"]
+                    _map_hora_hoy[_fila_hoy["Empleado"]] = _fila_hoy.get(
+                        "Hora Registrada", ""
+                    )
+
+            # Salida: "Puntual" si marcó a su hora oficial o después,
+            # "Temprano" si se fue antes de esa hora.
+            _map_salida_estado = {}
+            _map_salida_hora = {}
+            _map_horas_extra_min = {}
+            if not _asist_hoy_salida.empty:
+                for _, _fila_sal in _asist_hoy_salida.iterrows():
+                    _hora_reg_sal = str(_fila_sal.get("Hora Registrada", ""))
+                    _hora_ofic_sal = str(_fila_sal.get("Hora Salida Oficial", ""))
+                    if _hora_reg_sal and _hora_ofic_sal:
+                        _map_salida_estado[_fila_sal["Empleado"]] = (
+                            "Puntual"
+                            if _hora_reg_sal >= _hora_ofic_sal
+                            else "Temprano"
+                        )
+                    _map_salida_hora[_fila_sal["Empleado"]] = _hora_reg_sal
+                    _map_horas_extra_min[_fila_sal["Empleado"]] = int(
+                        _fila_sal.get("Horas Extra (min)", 0) or 0
+                    )
+
             for sede in sedes_unicas:
                 with st.container(border=True):
                     st.markdown(f"#### 📍 Local Principal: **{sede}**")
@@ -6902,101 +7076,11 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                             "No hay personal asignado a esta sede como principal."
                         )
                     else:
-                        k1, k2, k3, k4 = st.columns(4)
-                        tot_p, tot_t, tot_min_t, tot_min_e = 0, 0, 0, 0
-
-                        for _, emp_row in emps_sede.iterrows():
-                            df_emp_a = df_asistencia[
-                                (df_asistencia["Empleado"] == emp_row["nombre"])
-                                & (
-                                    df_asistencia["Fecha"]
-                                    .astype(str)
-                                    .str.startswith(prefix_filtro)
-                                )
-                            ]
-                            if not df_emp_a.empty:
-                                tot_p += df_emp_a[df_emp_a["Estado"] == "Puntual"][
-                                    "Fecha"
-                                ].nunique()
-                                tot_t += df_emp_a[df_emp_a["Estado"] == "Tardanza"][
-                                    "Fecha"
-                                ].nunique()
-                                tot_min_t += df_emp_a["Minutos Tardanza"].sum()
-                                tot_min_e += df_emp_a["Horas Extra (min)"].sum()
-
-                        max_dias_posibles = len(emps_sede) * num_dias_mes_gen
-
-                        hrs_dec_sede = round(tot_min_t / 60.0, 1)
-                        fmt_hm_sede = min_a_formato_horas(tot_min_t)
-
-                        k1.metric("Personal Afiliado", f"{len(emps_sede)} emps")
-                        k2.metric(
-                            "Puntualidades Totales",
-                            f"{tot_p} días",
-                            delta=f"{tot_p} de {max_dias_posibles} días-persona",
-                        )
-                    
-                        if es_mejora_activa(st.session_state.entorno):
-                            k3.metric(
-                                label="Horas Tardanza Sede",
-                                value=f"{hrs_dec_sede} hrs",
-                                delta=f"({fmt_hm_sede})",
-                                delta_color="off"
-                            )
-                        else:
-                            k3.metric("Horas Tardanza Sede", f"{round(tot_min_t / 60.0, 2)} hrs")
-
-                        k4.metric("Minutos Extras Totales", f"{tot_min_e} min")
-
-                        st.markdown("**Personal de la Sede:**")
-                        df_resumen_local = []
-                        for _, emp_row in emps_sede.iterrows():
-                            df_emp_a = df_asistencia[
-                                (df_asistencia["Empleado"] == emp_row["nombre"])
-                                & (
-                                    df_asistencia["Fecha"]
-                                    .astype(str)
-                                    .str.startswith(prefix_filtro)
-                                )
-                            ]
-                            p_cnt = (
-                                df_emp_a[df_emp_a["Estado"] == "Puntual"][
-                                    "Fecha"
-                                ].nunique()
-                                if not df_emp_a.empty
-                                else 0
-                            )
-                            t_cnt = (
-                                df_emp_a[df_emp_a["Estado"] == "Tardanza"][
-                                    "Fecha"
-                                ].nunique()
-                                if not df_emp_a.empty
-                                else 0
-                            )
-                            m_sum = (
-                                df_emp_a["Minutos Tardanza"].sum()
-                                if not df_emp_a.empty
-                                else 0
-                            )
-                            e_sum = (
-                                df_emp_a["Horas Extra (min)"].sum()
-                                if not df_emp_a.empty
-                                else 0
-                            )
-
-                            df_resumen_local.append({
-                                "DNI": emp_row["dni"],
-                                "Nombre": emp_row["nombre"],
-                                "Cargo": emp_row["cargo"],
-                                "Días Puntuales": f"{p_cnt} / {num_dias_mes_gen}",
-                                "Tardanzas": t_cnt,
-                                "Horas Tardanza": round(m_sum / 60.0, 2),
-                                "Min. Extras": e_sum,
-                            })
-                        st.dataframe(
-                            pd.DataFrame(df_resumen_local),
-                            use_container_width=True,
-                            hide_index=True,
+                        render_tarjetas_asistencia_hoy(
+                            emps_sede, _map_estado_hoy, _map_hora_hoy,
+                            mapa_salida_estado=_map_salida_estado,
+                            mapa_salida_hora=_map_salida_hora,
+                            mapa_horas_extra=_map_horas_extra_min,
                         )
                 st.write("")
 
@@ -7062,7 +7146,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                 if es_autorizado_edicion:
                     with st.expander(
                         "🛠️ Herramientas Avanzadas de Regularización de"
-                        " Asistencia (Exclusivo SuperAdmin / Dev)",
+                        " Asistencia",
                         expanded=False,
                     ):
                         st.caption(
@@ -7082,6 +7166,16 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 " días laborables transcurridos sin registro del"
                                 " mes seleccionado."
                             )
+                            _fecha_ingreso_visible = emp_info.get(
+                                "fecha_ingreso", ""
+                            )
+                            if _fecha_ingreso_visible:
+                                st.caption(
+                                    f"📌 Nunca regulariza antes de la fecha de"
+                                    f" ingreso real: **{_fecha_ingreso_visible}**"
+                                    " — así el trabajador se haya dado de alta"
+                                    " en el sistema mucho después."
+                                )
 
                             if st.button(
                                 "⚡ Marcar Entrada/Salida Puntual Masiva",
@@ -7099,6 +7193,17 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     )
                                 )
 
+                                # RESTRICCIÓN: nunca se puede regularizar
+                                # antes de la fecha de ingreso REAL del
+                                # trabajador (así haya sido dado de alta
+                                # en el sistema mucho después) — ni
+                                # SuperAdmin ni Developer pueden crear
+                                # marcaciones de un día en que la persona
+                                # ni siquiera había sido contratada.
+                                _fecha_ingreso_emp_reg = _parsear_fecha_flexible(
+                                    emp_info.get("fecha_ingreso", "")
+                                ) or date(1900, 1, 1)
+
                                 nuevos_registros_regularizados = []
                                 cant_creados = 0
 
@@ -7109,6 +7214,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
 
                                     if (
                                         f_reg <= hoy_actual
+                                        and f_reg >= _fecha_ingreso_emp_reg
                                         and f_reg_str not in FERIADOS_OFICIALES
                                         and nom_d_reg
                                         in st.session_state.dias_laborables
@@ -7222,9 +7328,36 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                     )
 
                         with col_reg2:
+                            # SuperAdmin (o Developer, ambos con rol
+                            # "master") SÍ pueden regularizar días CON
+                            # foto — Admin normal solo puede tocar días
+                            # SIN foto, como antes. La marcación con
+                            # foto es la prueba más fuerte de que
+                            # alguien sí estuvo ahí, así que solo el
+                            # nivel más alto puede corregirla (por
+                            # ejemplo, si el reconocimiento de rostro
+                            # falló pero la persona sí marcó).
+                            # CORREGIDO: solo Developer (PIN 9999,
+                            # developer_global) puede editar días CON
+                            # foto — SuperAdmin ya NO tiene esta
+                            # capacidad (se le dio antes, pero se
+                            # corrigió: su único poder extra es el
+                            # rellenado masivo hacia atrás, más abajo).
+                            # La marcación con foto es la prueba más
+                            # fuerte de que alguien sí estuvo ahí, así
+                            # que solo Developer puede corregirla (por
+                            # ejemplo, si el reconocimiento de rostro
+                            # falló pero la persona sí marcó).
+                            _puede_editar_con_foto = (
+                                st.session_state.developer_global
+                            )
                             st.markdown(
-                                "##### 2️⃣ Edición Individual (Solo Días Sin"
-                                " Foto)"
+                                "##### 2️⃣ Edición Individual "
+                                + (
+                                    "(Incluye días CON foto — exclusivo Developer)"
+                                    if _puede_editar_con_foto
+                                    else "(Solo Días Sin Foto)"
+                                )
                             )
 
                             df_asist_actual = (
@@ -7234,6 +7367,17 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                             )
 
                             if not df_asist_actual.empty:
+                                _condicion_foto = True  # por defecto, sin filtrar
+                                if not _puede_editar_con_foto:
+                                    _condicion_foto = (
+                                        df_asist_actual["Foto"].isna()
+                                        | (
+                                            df_asist_actual["Foto"]
+                                            .astype(str)
+                                            .str.strip()
+                                            == ""
+                                        )
+                                    )
                                 mask_ed = (
                                     (
                                         df_asist_actual["empresa_id"].astype(str)
@@ -7248,15 +7392,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                         .astype(str)
                                         .str.startswith(prefix_ind)
                                     )
-                                    & (
-                                        df_asist_actual["Foto"].isna()
-                                        | (
-                                            df_asist_actual["Foto"]
-                                            .astype(str)
-                                            .str.strip()
-                                            == ""
-                                        )
-                                    )
+                                    & _condicion_foto
                                 )
                                 df_editables = df_asist_actual[mask_ed]
 
@@ -7265,8 +7401,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                         df_editables["Fecha"].unique()
                                     )
                                     f_edit_sel = st.selectbox(
-                                        "Seleccione la Fecha sin foto a"
-                                        " modificar:",
+                                        "Seleccione la Fecha a modificar:",
                                         fechas_disponibles,
                                     )
 
@@ -7340,10 +7475,18 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                         st.rerun()
                                 else:
                                     st.caption(
-                                        "🔒 No hay registros sin foto para este"
-                                        " mes. Las marcaciones reales tomadas"
-                                        " con cámara no pueden ser editadas"
-                                        " manualmente."
+                                        "🔒 No hay registros disponibles"
+                                        " para editar este mes."
+                                        if _puede_editar_con_foto
+                                        else (
+                                            "🔒 No hay registros sin foto"
+                                            " para este mes. Las"
+                                            " marcaciones reales tomadas"
+                                            " con cámara no pueden ser"
+                                            " editadas manualmente por"
+                                            " Admin ni SuperAdmin — solo"
+                                            " Developer puede hacerlo."
+                                        )
                                     )
 
                 df_asist_emp = df_asistencia[
@@ -7382,108 +7525,142 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                 )
 
                 with st.container(border=True):
-                    m1, m2, m3, m4 = st.columns(4)
-                    m1.metric(
-                        "Días Puntuales (Mes)",
-                        f"{total_puntual} días",
-                        delta=f"{total_puntual} de {num_dias_m} días ({mes_ind_sel})",
+                    st.markdown(
+                        f"#### 📅 Calendario de Asistencia — {mes_ind_sel} {anio_ind_sel}"
                     )
-                    m2.metric(
-                        "Días con Tardanza",
-                        f"{total_tardanza} días",
-                        delta=f"{total_tardanza} de {num_dias_m} días ({mes_ind_sel})",
-                        delta_color="inverse",
+                    st.caption(
+                        "Consolidado del mes completo — a diferencia del"
+                        " Dashboard General (que muestra solo el día de"
+                        " hoy en vivo), aquí se arma todo el mes, celda"
+                        " por celda, hasta la fecha de hoy."
                     )
-                    m3.metric(
-                        "Horas Tardanza Acumuladas",
-                        f"{horas_tardanza_dec} hrs",
-                        delta=formato_hhmm_tardanza,
-                        delta_color="inverse",
-                    )
-                    m4.metric(
-                        "Minutos Extras Trabajados",
-                        f"{minutos_extra_acumulados} min",
-                        delta=min_a_formato_horas(minutos_extra_acumulados),
-                    )
-                    if minutos_extra_acumulados > 0:
-                        if st.session_state.permitir_horas_extra:
-                            st.caption(
-                                "✅ Esta empresa reconoce y paga horas"
-                                " extra — estos minutos sí se están"
-                                " calculando en la Planilla."
-                            )
-                        else:
-                            st.caption(
-                                "ℹ️ Esta empresa tiene las horas extra"
-                                " desactivadas — estos minutos quedan"
-                                " registrados como referencia, pero no"
-                                " se pagan en la Planilla."
-                            )
 
-                    st.divider()
+                    # Recalcular totales del mes (para el resumen chico
+                    # de arriba del calendario) — misma info que antes
+                    # daban las 4 tarjetas, ahora en una sola línea.
+                    if not df_asist_emp.empty:
+                        total_puntual = df_asist_emp[
+                            df_asist_emp["Estado"] == "Puntual"
+                        ]["Fecha"].nunique()
+                        total_tardanza = df_asist_emp[
+                            df_asist_emp["Estado"] == "Tardanza"
+                        ]["Fecha"].nunique()
+                        minutos_tardanza_acumulados = df_asist_emp[
+                            "Minutos Tardanza"
+                        ].sum()
+                        minutos_extra_acumulados = df_asist_emp[
+                            "Horas Extra (min)"
+                        ].sum()
+                    else:
+                        total_puntual = 0
+                        total_tardanza = 0
+                        minutos_tardanza_acumulados = 0
+                        minutos_extra_acumulados = 0
 
-                    st.markdown("#### 📊 Comportamiento Diario de Asistencia")
-                    timeline_data = []
+                    _resumen_extra = ""
+                    if minutos_extra_acumulados > 0 and st.session_state.permitir_horas_extra:
+                        _resumen_extra = (
+                            f" · ⏱ {minutos_extra_acumulados} min extra"
+                        )
+                    st.markdown(
+                        f"**{total_puntual}** días puntuales &nbsp;·&nbsp;"
+                        f" **{total_tardanza}** con tardanza"
+                        f"{_resumen_extra}"
+                    )
+
+                    # --- Construcción del calendario, celda por celda ---
+                    _primer_dia_mes = date(anio_ind_sel, m_num, 1)
+                    _relleno_inicial = _primer_dia_mes.weekday()  # 0=Lunes
+
+                    _celdas_html = []
+                    for _ in range(_relleno_inicial):
+                        _celdas_html.append('<div style="background:transparent;"></div>')
+
                     for d in range(1, num_dias_m + 1):
                         f_eval = date(anio_ind_sel, m_num, d)
                         f_str = f_eval.strftime("%Y-%m-%d")
-
                         df_dia_emp = df_asist_emp[
                             df_asist_emp["Fecha"].astype(str).str.slice(0, 10) == f_str
                         ]
-                        ent_reg = df_dia_emp[
-                            df_dia_emp["Tipo Marcación"] == "Entrada"
-                        ]
+                        ent_reg = df_dia_emp[df_dia_emp["Tipo Marcación"] == "Entrada"]
+                        sal_reg = df_dia_emp[df_dia_emp["Tipo Marcación"] == "Salida"]
 
+                        _hora_ent_cal, _hora_sal_cal = "", ""
                         if not ent_reg.empty:
-                            est = ent_reg.iloc[0]["Estado"]
-                            val_y = 2 if est == "Puntual" else 1
-                            timeline_data.append({
-                                "Día": d,
-                                "Estado": est.upper(),
-                                "Nivel": val_y,
-                            })
+                            est_dia = ent_reg.iloc[0]["Estado"]
+                            _hora_ent_cal = str(ent_reg.iloc[0].get("Hora Registrada", ""))
+                            color_borde = "#00B050" if est_dia == "Puntual" else "#FF8C00"
+                            etiqueta_dia = est_dia.upper()
                         elif f_eval > hoy_peru():
-                            pass  # día futuro: no hay nada que marcar todavía
+                            color_borde = "#2d3340"
+                            etiqueta_dia = ""
                         elif f_str in FERIADOS_OFICIALES:
-                            pass  # feriado oficial: no cuenta como falta
-                        elif DIAS_SEMANA_MAP[f_eval.weekday()] in st.session_state.dias_laborables:
-                            # Día laborable, sin ninguna marcación de
-                            # Entrada: es una falta real.
-                            timeline_data.append({
-                                "Día": d,
-                                "Estado": "FALTA",
-                                "Nivel": 0.5,
-                            })
+                            color_borde = "#5865f2"
+                            etiqueta_dia = "FERIADO"
+                        elif DIAS_SEMANA_MAP[f_eval.weekday()] not in st.session_state.dias_laborables:
+                            color_borde = "#3a3f4b"
+                            etiqueta_dia = "DESCANSO"
+                        else:
+                            color_borde = "#C00000"
+                            etiqueta_dia = "FALTA"
 
-                    if timeline_data:
-                        df_tl = pd.DataFrame(timeline_data)
-                        fig_tl = px.bar(
-                            df_tl,
-                            x="Día",
-                            y="Nivel",
-                            color="Estado",
-                            color_discrete_map={
-                                "PUNTUAL": "#2EB67D",
-                                "TARDANZA": "#FF8C00",
-                                "FALTA": "#FF6B6B",
-                            },
-                            height=260,
-                        )
-                        fig_tl.update_layout(
-                            yaxis=dict(
-                                tickmode="array",
-                                tickvals=[0.5, 1, 2],
-                                ticktext=["FALTA", "TARDANZA", "PUNTUAL"],
-                            ),
-                            xaxis=dict(dtick=1),
-                            margin=dict(l=10, r=10, t=10, b=10),
-                        )
-                        st.plotly_chart(
-                            fig_tl,
-                            use_container_width=True,
-                            key=f"tl_clean_{emp_ind_sel}",
-                        )
+                        if not sal_reg.empty:
+                            _hora_sal_cal = str(sal_reg.iloc[0].get("Hora Registrada", ""))
+                            _hora_ofic_sal_cal = str(sal_reg.iloc[0].get("Hora Salida Oficial", ""))
+                            _sal_puntual_cal = (
+                                _hora_sal_cal >= _hora_ofic_sal_cal
+                                if _hora_ofic_sal_cal else True
+                            )
+                            _color_sal_cal = "#00B050" if _sal_puntual_cal else "#FFAB40"
+                        else:
+                            _color_sal_cal = "#8b949e"
+
+                        _horas_html = ""
+                        if _hora_ent_cal or _hora_sal_cal:
+                            _horas_html = f"""
+                            <div style="font-size:9px; color:#8b949e; margin-top:3px;">
+                                {"🕐 " + _hora_ent_cal if _hora_ent_cal else ""}
+                            </div>
+                            <div style="font-size:9px; color:{_color_sal_cal}; margin-top:1px;">
+                                {"🚪 " + _hora_sal_cal if _hora_sal_cal else ""}
+                            </div>
+                            """
+
+                        _celdas_html.append(f"""
+                        <div style="border:2px solid {color_borde};
+                            border-radius:8px; padding:6px 4px;
+                            background:rgba(255,255,255,0.02);
+                            min-height:74px;">
+                            <div style="font-size:12px; font-weight:700;
+                                color:#e6edf3;">{d}</div>
+                            <div style="font-size:9px; font-weight:700;
+                                color:{color_borde}; margin-top:2px;
+                                line-height:1.2;">{etiqueta_dia}</div>
+                            {_horas_html}
+                        </div>
+                        """)
+
+                    _dias_semana_header = "".join(
+                        f'<div style="text-align:center; font-size:11px; '
+                        f'font-weight:700; color:#8b949e;">{d}</div>'
+                        for d in ["LUN", "MAR", "MIÉ", "JUE", "VIE", "SÁB", "DOM"]
+                    )
+
+                    render_html(f"""
+                    <div style="display:grid; grid-template-columns:repeat(7,1fr);
+                        gap:4px; margin-bottom:4px;">
+                        {_dias_semana_header}
+                    </div>
+                    <div style="display:grid; grid-template-columns:repeat(7,1fr);
+                        gap:6px;">
+                        {''.join(_celdas_html)}
+                    </div>
+                    """)
+
+                    st.caption(
+                        "🟢 Puntual · 🟠 Tardanza · 🔴 Falta · 🔵 Feriado ·"
+                        " ⚪ Descanso (no laborable) · ⬛ Todavía no llega ese día"
+                    )
 
                 st.markdown(
                     "#### 🔍 Bitácora de Marcaciones, Fotos y Verificación GPS"
@@ -7568,7 +7745,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                         " este mes."
                     )
 
-        if st.session_state.rol in ["admin", "master"] and not ES_CELULAR:
+        if st.session_state.rol == "master" and not ES_CELULAR:
             with tab_objs[2]:
                 if es_master_o_dev:
                     st.subheader("🏢 Gestión Integral de Empresas y Sedes SaaS")
@@ -8702,6 +8879,37 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                         " no se guardó nada."
                                     )
 
+                        st.divider()
+                        with st.container(border=True):
+                            st.markdown("#### 🕐 Horas Extra")
+                            toggle_hextra = st.checkbox(
+                                "Esta empresa SÍ reconoce y paga horas extra",
+                                value=st.session_state.permitir_horas_extra,
+                                help=(
+                                    "Si lo dejas destildado, las horas extra"
+                                    " no se calculan ni se pagan en la"
+                                    " planilla, ni se muestran en las"
+                                    " tarjetas del Dashboard, aunque el"
+                                    " trabajador se quede más tiempo"
+                                    " marcado. Lo activan Developer o"
+                                    " SuperAdmin."
+                                ),
+                            )
+                            if toggle_hextra != st.session_state.permitir_horas_extra:
+                                st.session_state.permitir_horas_extra = toggle_hextra
+                                if supabase:
+                                    try:
+                                        guardar_configuracion_sistema(
+                                            supabase,
+                                            st.session_state.empresa_id,
+                                            permitir_horas_extra=toggle_hextra,
+                                        )
+                                    except Exception as e:
+                                        st.warning(
+                                            f"No se pudo guardar: {e}"
+                                        )
+                                st.rerun()
+
             with tab_objs[5]:
                 if not (
                     st.session_state.developer_global
@@ -8722,68 +8930,44 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                     " listos para usar en tu planilla."
                 )
 
-                col_toggle1, col_toggle2 = st.columns([1.3, 1])
-                with col_toggle1:
-                    toggle_hextra = st.checkbox(
-                        "🕐 Esta empresa SÍ reconoce y paga horas extra",
-                        value=st.session_state.permitir_horas_extra,
-                        help=(
-                            "Si lo dejas destildado, las horas extra no"
-                            " se calculan ni se pagan en la planilla,"
-                            " aunque el trabajador se quede más tiempo"
-                            " marcado. Algunas empresas no las"
-                            " reconocen."
-                        ),
+                st.caption(
+                    "📌 El interruptor de Horas Extra se movió a Ajustes"
+                    " → Seguridad (lo activan Developer o SuperAdmin)."
+                )
+                opciones_regimen = list(REGIMENES_LABORALES.keys())
+                regimen_sel = st.selectbox(
+                    "📋 Régimen Laboral de esta empresa:",
+                    opciones_regimen,
+                    index=opciones_regimen.index(
+                        st.session_state.regimen_laboral
                     )
-                    if toggle_hextra != st.session_state.permitir_horas_extra:
-                        st.session_state.permitir_horas_extra = toggle_hextra
-                        if supabase:
-                            try:
-                                guardar_configuracion_sistema(
-                                    supabase,
-                                    st.session_state.empresa_id,
-                                    permitir_horas_extra=toggle_hextra,
-                                )
-                            except Exception as e:
-                                st.warning(
-                                    f"No se pudo guardar la preferencia ({e})."
-                                )
-                        st.rerun()
-                with col_toggle2:
-                    opciones_regimen = list(REGIMENES_LABORALES.keys())
-                    regimen_sel = st.selectbox(
-                        "📋 Régimen Laboral de esta empresa:",
-                        opciones_regimen,
-                        index=opciones_regimen.index(
-                            st.session_state.regimen_laboral
-                        )
-                        if st.session_state.regimen_laboral in opciones_regimen
-                        else 0,
-                        format_func=lambda k: REGIMENES_LABORALES[k]["nombre"],
-                        help=(
-                            "Régimen General: 30 días de vacaciones, CTS y"
-                            " gratificación completas. MYPE Microempresa:"
-                            " 15 días de vacaciones, SIN CTS ni"
-                            " gratificación. MYPE Pequeña Empresa: 15 días"
-                            " de vacaciones, CTS y gratificación a la"
-                            " mitad. Debe coincidir con tu inscripción"
-                            " real en REMYPE (Ley 28015 / D.Leg. 1086)."
-                        ),
-                    )
-                    if regimen_sel != st.session_state.regimen_laboral:
-                        st.session_state.regimen_laboral = regimen_sel
-                        if supabase:
-                            try:
-                                guardar_configuracion_sistema(
-                                    supabase,
-                                    st.session_state.empresa_id,
-                                    regimen_laboral=regimen_sel,
-                                )
-                            except Exception as e:
-                                st.warning(
-                                    f"No se pudo guardar la preferencia ({e})."
-                                )
-                        st.rerun()
+                    if st.session_state.regimen_laboral in opciones_regimen
+                    else 0,
+                    format_func=lambda k: REGIMENES_LABORALES[k]["nombre"],
+                    help=(
+                        "Régimen General: 30 días de vacaciones, CTS y"
+                        " gratificación completas. MYPE Microempresa:"
+                        " 15 días de vacaciones, SIN CTS ni"
+                        " gratificación. MYPE Pequeña Empresa: 15 días"
+                        " de vacaciones, CTS y gratificación a la"
+                        " mitad. Debe coincidir con tu inscripción"
+                        " real en REMYPE (Ley 28015 / D.Leg. 1086)."
+                    ),
+                )
+                if regimen_sel != st.session_state.regimen_laboral:
+                    st.session_state.regimen_laboral = regimen_sel
+                    if supabase:
+                        try:
+                            guardar_configuracion_sistema(
+                                supabase,
+                                st.session_state.empresa_id,
+                                regimen_laboral=regimen_sel,
+                            )
+                        except Exception as e:
+                            st.warning(
+                                f"No se pudo guardar la preferencia ({e})."
+                            )
+                    st.rerun()
 
                 with st.container(border=True):
                     col_pl1, col_pl2 = st.columns(2)
