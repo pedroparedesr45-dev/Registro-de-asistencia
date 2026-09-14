@@ -4404,27 +4404,41 @@ if not VISTA_TRABAJADOR_MOVIL:
                 if clave_coincide(_pin_candado_dev, st.session_state.pin_developer):
                     st.session_state.dev_entorno_desbloqueado = True
                     st.session_state.developer_global = True
-                    # El candado te mete directo al panel de DEV_TEST —
-                    # ya probaste quién eres con el PIN Developer, no
-                    # hace falta un segundo PIN aparte para esa empresa.
-                    df_dev_candado = cargar_empresas()
-                    df_dev_candado = df_dev_candado[
-                        df_dev_candado["entorno"] == "DEV"
-                    ]
-                    if not df_dev_candado.empty:
-                        st.session_state.empresa_id = str(
-                            df_dev_candado.iloc[0]["empresa_id"]
-                        )
-                        cargar_configuracion_sistema(
-                            supabase, st.session_state.empresa_id
-                        )
-                        st.session_state.autenticado = True
-                        st.session_state.rol = "master"
-                    # Si todavía no existe ninguna empresa DEV_TEST, se
-                    # deja 'autenticado' en False — el mensaje de
-                    # bootstrap (más abajo, en Panel de Gestión) se
-                    # encarga de dejarlo crear la primera.
-                    st.rerun()
+                    if st.session_state.autenticado:
+                        # CORREGIDO: si ya estabas trabajando en una
+                        # empresa (por ejemplo, entraste a Producción
+                        # como SuperAdmin), el candado solo debe
+                        # desbloquear las HERRAMIENTAS de developer
+                        # (logo, diagnóstico) — sin cambiarte la
+                        # empresa activa a DEV_TEST por detrás. Antes
+                        # esto pasaba siempre, y hacía que cosas como
+                        # subir el logo se guardaran en DEV_TEST en vez
+                        # de en la empresa en la que realmente estabas
+                        # parado.
+                        st.rerun()
+                    else:
+                        # Todavía no habías iniciado sesión en ninguna
+                        # empresa — aquí sí tiene sentido meterte
+                        # directo al panel de DEV_TEST, ya que probaste
+                        # quién eres con el PIN Developer.
+                        df_dev_candado = cargar_empresas()
+                        df_dev_candado = df_dev_candado[
+                            df_dev_candado["entorno"] == "DEV"
+                        ]
+                        if not df_dev_candado.empty:
+                            st.session_state.empresa_id = str(
+                                df_dev_candado.iloc[0]["empresa_id"]
+                            )
+                            cargar_configuracion_sistema(
+                                supabase, st.session_state.empresa_id
+                            )
+                            st.session_state.autenticado = True
+                            st.session_state.rol = "master"
+                        # Si todavía no existe ninguna empresa DEV_TEST,
+                        # se deja 'autenticado' en False — el mensaje
+                        # de bootstrap (en Panel de Gestión) se encarga
+                        # de dejarlo crear la primera.
+                        st.rerun()
                 else:
                     st.error("PIN Incorrecto.")
     else:
