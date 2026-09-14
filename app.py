@@ -631,7 +631,7 @@ def render_animacion_marcado_exitoso(logo_url, hora_texto, estado="Puntual", rac
 
 
 def render_tarjetas_asistencia_hoy(
-    df_lista_empleados, mapa_estado, mapa_hora, cols_por_fila=4,
+    df_lista_empleados, mapa_estado, mapa_hora, cols_por_fila=3,
     mapa_salida_estado=None, mapa_salida_hora=None, mapa_horas_extra=None,
 ):
     """Dibuja la cuadrícula de tarjetas de '¿Quién marcó hoy?' — una
@@ -640,7 +640,8 @@ def render_tarjetas_asistencia_hoy(
     renglón con eso: 'Salida Puntual' (verde, salió a su hora oficial
     o después) o 'Salida Temprano' (ámbar, se fue antes) — más la Hora
     Extra si la empresa la reconoce (interruptor en Ajustes) y sí
-    trabajó de más ese día."""
+    trabajó de más ese día. Tarjetas más grandes a pedido (3 por fila
+    en vez de 4, tipografía más grande)."""
     mapa_salida_estado = mapa_salida_estado or {}
     mapa_salida_hora = mapa_salida_hora or {}
     mapa_horas_extra = mapa_horas_extra or {}
@@ -680,32 +681,32 @@ def render_tarjetas_asistencia_hoy(
                     )
 
                 salida_html = f"""
-                <div style="font-size:11px; color:{color_sal};
-                    font-weight:700; margin-top:4px;">
+                <div style="font-size:15px; color:{color_sal};
+                    font-weight:700; margin-top:8px;">
                     🚪 {texto_sal}{extra_html}
                 </div>
-                <div style="font-size:10px; color:#8b949e;">
+                <div style="font-size:13px; color:#8b949e; margin-top:2px;">
                     {hora_salida}
                 </div>
                 """
 
             with fila_cols[j]:
                 render_html(f"""
-                <div style="border:2px solid {color};
-                    border-radius:12px; padding:10px 12px;
-                    margin-bottom:8px;
-                    background:rgba(255,255,255,0.03);">
-                    <div style="font-size:13px; font-weight:600;
+                <div style="border:3px solid {color};
+                    border-radius:16px; padding:18px 20px;
+                    margin-bottom:14px;
+                    background:rgba(255,255,255,0.04);">
+                    <div style="font-size:18px; font-weight:700;
                         color:#e6edf3; white-space:nowrap;
                         overflow:hidden; text-overflow:ellipsis;">
                         {nombre_emp}
                     </div>
-                    <div style="font-size:12px; color:{color};
-                        font-weight:700; margin-top:4px;">
+                    <div style="font-size:16px; color:{color};
+                        font-weight:800; margin-top:8px;">
                         {icono} {texto}
                     </div>
-                    <div style="font-size:11px; color:#8b949e;
-                        margin-top:2px;">
+                    <div style="font-size:14px; color:#8b949e;
+                        margin-top:4px;">
                         {hora if hora else "&nbsp;"}
                     </div>
                     {salida_html}
@@ -775,12 +776,25 @@ def calcular_planilla_todos_los_empleados(
             ]
             if not emp_asist.empty else pd.DataFrame()
         )
+        _entrada_mes_solo = (
+            emp_asist_mes[emp_asist_mes["Tipo Marcación"] == "Entrada"]
+            if not emp_asist_mes.empty else emp_asist_mes
+        )
+        # CORREGIDO: bug real que afectaba la Planilla — antes se
+        # contaba "Puntual"/"Tardanza" sobre TODAS las marcaciones del
+        # mes (Entrada Y Salida mezcladas). Como la Salida también
+        # puede decir "Puntual", un mismo día con Entrada Tardanza +
+        # Salida Puntual se contaba DOBLE (una vez como tardanza, otra
+        # como puntual), inflando los "días laborados" usados para
+        # calcular el sueldo. Ahora solo se cuenta la marcación de
+        # Entrada, que es la que de verdad determina si llegó puntual
+        # o tarde ese día.
         tardanzas_dias = (
-            emp_asist_mes[emp_asist_mes["Estado"] == "Tardanza"]["Fecha"].nunique()
+            _entrada_mes_solo[_entrada_mes_solo["Estado"] == "Tardanza"]["Fecha"].nunique()
             if not emp_asist_mes.empty else 0
         )
         puntuales = (
-            emp_asist_mes[emp_asist_mes["Estado"] == "Puntual"]["Fecha"].nunique()
+            _entrada_mes_solo[_entrada_mes_solo["Estado"] == "Puntual"]["Fecha"].nunique()
             if not emp_asist_mes.empty else 0
         )
         min_tardanza = int(emp_asist_mes["Minutos Tardanza"].sum()) if not emp_asist_mes.empty else 0
@@ -967,104 +981,62 @@ def render_gate_consentimiento(supabase, datos_emp):
 # CUALQUIER empresa nueva, antes de que alguien configure un logo
 # propio distinto desde el panel developer.
 LOGO_DEFAULT_EMBEBIDO = (
-    "data:image/webp;base64,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"
+    "data:image/webp;base64,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"
 )
 
 
@@ -1145,6 +1117,45 @@ if VISTA_TRABAJADOR_MOVIL:
 # TEMA VISUAL GLOBAL — "futurista" (Parte 1 del rediseño)
 # ---------------------------------------------------------
 # Solo CSS/HTML: no cambia ningún widget, dato ni lógica de negocio.
+def _generar_css_estrellas(cantidad, semilla):
+    """Genera un campo de estrellas fijo (no se regenera en cada rerun,
+    misma semilla siempre) usando la técnica de box-shadow — una sola
+    capa con cientos de 'estrellas' sin crear cientos de elementos HTML
+    reales, así no pesa nada. Cubre TODA la pantalla (incluida la franja
+    de arriba, que a veces se ve vacía por el espacio reservado de
+    Streamlit) para que combine con el tema de los meteoritos en vez de
+    verse como un hueco."""
+    rnd = random.Random(semilla)
+    sombras = []
+    for _ in range(cantidad):
+        x = rnd.randint(0, 100)
+        y = rnd.randint(0, 100)
+        sombras.append(f"{x}vw {y}vh #fff")
+    return ", ".join(sombras)
+
+
+_ESTRELLAS_CSS = f"""
+.fac-estrellas{{
+    position:absolute; inset:0; width:2px; height:2px; border-radius:50%;
+    background:transparent;
+}}
+.fac-estrellas-1{{
+    box-shadow:{_generar_css_estrellas(90, 101)};
+    animation:fac-titilar-1 4s ease-in-out infinite alternate;
+    opacity:0.55;
+}}
+.fac-estrellas-2{{
+    box-shadow:{_generar_css_estrellas(60, 202)};
+    animation:fac-titilar-2 5.5s ease-in-out infinite alternate;
+    opacity:0.35;
+}}
+@keyframes fac-titilar-1{{ from{{opacity:0.25;}} to{{opacity:0.75;}} }}
+@keyframes fac-titilar-2{{ from{{opacity:0.6;}} to{{opacity:0.15;}} }}
+@media (prefers-reduced-motion: reduce){{
+    .fac-estrellas-1, .fac-estrellas-2{{ animation:none !important; }}
+}}
+"""
+
 # Reutiliza los mismos st.button/st.text_input/st.selectbox/etc. de
 # siempre, solo les cambia la piel. El fondo animado va en una capa fija
 # detrás de todo (z-index -1) para no interferir con los clics.
@@ -1206,6 +1217,13 @@ render_html(
     [data-testid="stAppViewContainer"], [data-testid="stHeader"]{ background:transparent !important; }
     .stApp{ background:transparent !important; }
     body, [data-testid="stAppViewContainer"] { color:var(--text); }
+    /* Reduce el espacio vacío reservado arriba de la pantalla (la
+       barra superior de Streamlit, transparente pero seguía ocupando
+       lugar) — así el contenido empieza más arriba, sin ese hueco. */
+    [data-testid="stHeader"]{ height:2.5rem !important; }
+    [data-testid="stAppViewContainer"] > .main .block-container{
+        padding-top:1.5rem !important;
+    }
 
     h1, h2, h3{ font-family:var(--font-display) !important; letter-spacing:0.01em; }
     h1{
@@ -1300,17 +1318,21 @@ render_html(
         border-radius:14px;
         padding:10px 14px;
     }
+
+    /*__ESTRELLAS_CSS__*/
     </style>
 
     <div class="fac-bg-layer">
         <div class="fac-bg-base"></div>
+        <div class="fac-estrellas fac-estrellas-1"></div>
+        <div class="fac-estrellas fac-estrellas-2"></div>
         <div class="fac-orb fac-orb-cyan"></div>
         <div class="fac-orb fac-orb-violet"></div>
         <div class="fac-orb fac-orb-cyan2"></div>
         <div class="fac-grid-overlay"></div>
         <div class="fac-scanline"></div>
     </div>
-    """
+    """.replace("/*__ESTRELLAS_CSS__*/", _ESTRELLAS_CSS)
 )
 
 
@@ -2097,6 +2119,13 @@ def cargar_configuracion_sistema(_supabase, empresa_id):
             st.session_state.planilla_habilitada = bool(
                 cfg.get("planilla_habilitada", False)
             )
+            if cfg.get("dias_laborables"):
+                try:
+                    st.session_state.dias_laborables = json.loads(
+                        cfg["dias_laborables"]
+                    )
+                except Exception:
+                    pass
     except Exception:
         pass  # si falla, se sigue usando lo que ya había cargado
 
@@ -3134,12 +3163,25 @@ def generar_excel_afpnet(df_empleados, df_asistencia, mes_sel, anio_sel, supabas
             emp_asist[emp_asist["Fecha"].astype(str).str.startswith(prefix_periodo)]
             if not emp_asist.empty else pd.DataFrame()
         )
+        _entrada_mes_solo = (
+            emp_asist_mes[emp_asist_mes["Tipo Marcación"] == "Entrada"]
+            if not emp_asist_mes.empty else emp_asist_mes
+        )
+        # CORREGIDO: bug real que afectaba la Planilla — antes se
+        # contaba "Puntual"/"Tardanza" sobre TODAS las marcaciones del
+        # mes (Entrada Y Salida mezcladas). Como la Salida también
+        # puede decir "Puntual", un mismo día con Entrada Tardanza +
+        # Salida Puntual se contaba DOBLE (una vez como tardanza, otra
+        # como puntual), inflando los "días laborados" usados para
+        # calcular el sueldo. Ahora solo se cuenta la marcación de
+        # Entrada, que es la que de verdad determina si llegó puntual
+        # o tarde ese día.
         tardanzas_dias = (
-            emp_asist_mes[emp_asist_mes["Estado"] == "Tardanza"]["Fecha"].nunique()
+            _entrada_mes_solo[_entrada_mes_solo["Estado"] == "Tardanza"]["Fecha"].nunique()
             if not emp_asist_mes.empty else 0
         )
         puntuales = (
-            emp_asist_mes[emp_asist_mes["Estado"] == "Puntual"]["Fecha"].nunique()
+            _entrada_mes_solo[_entrada_mes_solo["Estado"] == "Puntual"]["Fecha"].nunique()
             if not emp_asist_mes.empty else 0
         )
         min_tardanza = int(emp_asist_mes["Minutos Tardanza"].sum()) if not emp_asist_mes.empty else 0
@@ -3230,12 +3272,25 @@ def generar_borrador_plame(df_empleados, df_asistencia, mes_sel, anio_sel, supab
             emp_asist[emp_asist["Fecha"].astype(str).str.startswith(prefix_periodo)]
             if not emp_asist.empty else pd.DataFrame()
         )
+        _entrada_mes_solo = (
+            emp_asist_mes[emp_asist_mes["Tipo Marcación"] == "Entrada"]
+            if not emp_asist_mes.empty else emp_asist_mes
+        )
+        # CORREGIDO: bug real que afectaba la Planilla — antes se
+        # contaba "Puntual"/"Tardanza" sobre TODAS las marcaciones del
+        # mes (Entrada Y Salida mezcladas). Como la Salida también
+        # puede decir "Puntual", un mismo día con Entrada Tardanza +
+        # Salida Puntual se contaba DOBLE (una vez como tardanza, otra
+        # como puntual), inflando los "días laborados" usados para
+        # calcular el sueldo. Ahora solo se cuenta la marcación de
+        # Entrada, que es la que de verdad determina si llegó puntual
+        # o tarde ese día.
         tardanzas_dias = (
-            emp_asist_mes[emp_asist_mes["Estado"] == "Tardanza"]["Fecha"].nunique()
+            _entrada_mes_solo[_entrada_mes_solo["Estado"] == "Tardanza"]["Fecha"].nunique()
             if not emp_asist_mes.empty else 0
         )
         puntuales = (
-            emp_asist_mes[emp_asist_mes["Estado"] == "Puntual"]["Fecha"].nunique()
+            _entrada_mes_solo[_entrada_mes_solo["Estado"] == "Puntual"]["Fecha"].nunique()
             if not emp_asist_mes.empty else 0
         )
         min_tardanza = int(emp_asist_mes["Minutos Tardanza"].sum()) if not emp_asist_mes.empty else 0
@@ -4389,20 +4444,50 @@ if not VISTA_TRABAJADOR_MOVIL:
         # aplique a TODOS los dispositivos y sesiones, no solo a la que
         # lo configura (antes solo vivía en esta sesión del navegador).
         with st.sidebar.expander("🏅 Animación de éxito (solo dev)"):
+            _valor_logo_actual = st.session_state.get(
+                "logo_globos_url", LOGO_DEFAULT_EMBEBIDO
+            )
+            if _valor_logo_actual == LOGO_DEFAULT_EMBEBIDO:
+                st.caption("✅ Usando el logo por defecto embebido en el código.")
+            else:
+                st.caption(
+                    "⚠️ Hay un logo GUARDADO EN SUPABASE distinto al"
+                    " embebido en el código — ese es el que se está"
+                    " usando (tiene prioridad). Si quieres volver al"
+                    " logo por defecto de esta empresa, usa el botón de"
+                    " abajo."
+                )
+            if st.button("🔄 Restablecer al logo por defecto de esta empresa"):
+                st.session_state.logo_globos_url = LOGO_DEFAULT_EMBEBIDO
+                if supabase:
+                    try:
+                        guardar_configuracion_sistema(
+                            supabase,
+                            st.session_state.empresa_id,
+                            logo_globos_url="",
+                        )
+                        st.success(
+                            "✅ Restablecido — ya no depende de nada"
+                            " guardado en Supabase."
+                        )
+                        st.rerun()
+                    except Exception as e:
+                        st.warning(f"No se pudo guardar en la nube ({e}).")
+
             _logo_nuevo = st.text_input(
-                "URL del logo para el sello, verificación y meteoritos:",
-                value=st.session_state.get(
-                    "logo_globos_url", LOGO_DEFAULT_EMBEBIDO
-                ),
+                "O pega la URL de un logo distinto para esta empresa:",
+                value="",
+                placeholder="https://...",
                 help=(
                     "Se usa en el sello que aparece al confirmar una"
                     " marcación, en el anillo de verificación al iniciar"
-                    " sesión, y en los meteoritos de fondo. Por defecto"
-                    " es el ícono de la app. Se guarda para TODOS los"
-                    " dispositivos, no solo este."
+                    " sesión, y en los meteoritos de fondo. Se guarda en"
+                    " Supabase para TODOS los dispositivos, no solo"
+                    " este — y toma prioridad sobre el logo por defecto"
+                    " del código hasta que lo restablezcas."
                 ),
             )
-            if _logo_nuevo != st.session_state.get("logo_globos_url", ""):
+            if _logo_nuevo:
                 st.session_state.logo_globos_url = _logo_nuevo
                 if supabase:
                     try:
@@ -4414,6 +4499,58 @@ if not VISTA_TRABAJADOR_MOVIL:
                         st.success("✅ Logo actualizado para todos.")
                     except Exception as e:
                         st.warning(f"No se pudo guardar en la nube ({e}).")
+
+            st.divider()
+            st.caption(
+                "📤 O sube el archivo directo (PNG/JPG) — no depende de"
+                " ningún link externo que se pueda caer más adelante."
+            )
+            _archivo_logo = st.file_uploader(
+                "Subir logo (PNG o JPG):",
+                type=["png", "jpg", "jpeg"],
+                key="uploader_logo_dev",
+            )
+            if _archivo_logo is not None:
+                try:
+                    _img_subida = Image.open(_archivo_logo)
+                    if _img_subida.mode not in ("RGB", "RGBA"):
+                        _img_subida = _img_subida.convert("RGBA")
+                    _ancho_objetivo = 200
+                    _ratio = _ancho_objetivo / _img_subida.width
+                    _alto_objetivo = max(1, int(_img_subida.height * _ratio))
+                    _img_chica = _img_subida.resize(
+                        (_ancho_objetivo, _alto_objetivo), Image.LANCZOS
+                    )
+                    _buffer_webp = io.BytesIO()
+                    _img_chica.save(_buffer_webp, format="WEBP", quality=88, method=6)
+                    _b64_logo = base64.b64encode(
+                        _buffer_webp.getvalue()
+                    ).decode("ascii")
+                    _data_uri_logo = f"data:image/webp;base64,{_b64_logo}"
+
+                    st.image(_archivo_logo, caption="Vista previa", width=150)
+
+                    if st.button("💾 Usar este logo subido"):
+                        st.session_state.logo_globos_url = _data_uri_logo
+                        if supabase:
+                            try:
+                                guardar_configuracion_sistema(
+                                    supabase,
+                                    st.session_state.empresa_id,
+                                    logo_globos_url=_data_uri_logo,
+                                )
+                                st.success(
+                                    "✅ Logo subido y guardado para todos"
+                                    " los dispositivos — ya no depende de"
+                                    " ningún link externo."
+                                )
+                                st.rerun()
+                            except Exception as e:
+                                st.warning(
+                                    f"No se pudo guardar en la nube ({e})."
+                                )
+                except Exception as e:
+                    st.error(f"No se pudo procesar la imagen: {e}")
 
         # Indicador de estado del Nivel 1 (detección de rostro). Solo
         # visible aquí, con el entorno DEV desbloqueado, para que el
@@ -5003,15 +5140,22 @@ def _construir_hoja_planilla(
             if not emp_asist.empty
             else pd.DataFrame()
         )
+        _entrada_mes_solo = (
+            emp_asist_mes[emp_asist_mes["Tipo Marcación"] == "Entrada"]
+            if not emp_asist_mes.empty else emp_asist_mes
+        )
+        # Ver nota completa en calcular_planilla_todos_los_empleados:
+        # solo se cuenta la marcación de Entrada para Puntual/Tardanza,
+        # nunca la Salida (que también puede decir "Puntual").
         tardanzas_dias = (
-            emp_asist_mes[emp_asist_mes["Estado"] == "Tardanza"][
+            _entrada_mes_solo[_entrada_mes_solo["Estado"] == "Tardanza"][
                 "Fecha"
             ].nunique()
             if not emp_asist_mes.empty
             else 0
         )
         puntuales = (
-            emp_asist_mes[emp_asist_mes["Estado"] == "Puntual"][
+            _entrada_mes_solo[_entrada_mes_solo["Estado"] == "Puntual"][
                 "Fecha"
             ].nunique()
             if not emp_asist_mes.empty
@@ -5377,15 +5521,22 @@ def generar_excel_completo(df_asistencia, df_empleados, mes_sel, anio_sel):
             else pd.DataFrame()
         )
 
+        _entrada_mes_solo2 = (
+            emp_asist_mes[emp_asist_mes["Tipo Marcación"] == "Entrada"]
+            if not emp_asist_mes.empty else emp_asist_mes
+        )
+        # Ver nota completa en calcular_planilla_todos_los_empleados:
+        # solo se cuenta la marcación de Entrada para Puntual/Tardanza,
+        # nunca la Salida (que también puede decir "Puntual").
         tardanzas = (
-            emp_asist_mes[emp_asist_mes["Estado"] == "Tardanza"][
+            _entrada_mes_solo2[_entrada_mes_solo2["Estado"] == "Tardanza"][
                 "Fecha"
             ].nunique()
             if not emp_asist_mes.empty
             else 0
         )
         puntuales = (
-            emp_asist_mes[emp_asist_mes["Estado"] == "Puntual"][
+            _entrada_mes_solo2[_entrada_mes_solo2["Estado"] == "Puntual"][
                 "Fecha"
             ].nunique()
             if not emp_asist_mes.empty
@@ -6102,7 +6253,12 @@ else:
         st.session_state.entorno = "PROD"
         st.rerun()
 
-if opcion == "⏰ Marcar Asistencia":
+def render_lluvia_meteoritos(cantidad=4):
+    """Dibuja la 'lluvia' de meteoritos (el logo de la empresa cruzando
+    la pantalla en diagonal con una estela) — se usa en la pantalla de
+    Marcar Asistencia y también en el Panel de Gestión para
+    SuperAdmin/Admin/Developer, para que se sienta el mismo tema
+    futurista en toda la app, no solo al marcar."""
     _logo_meteoros = st.session_state.get(
         "logo_globos_url", LOGO_DEFAULT_EMBEBIDO
     )
@@ -6110,12 +6266,12 @@ if opcion == "⏰ Marcar Asistencia":
         '<div style="position:fixed; inset:0; z-index:-1; overflow:hidden;'
         ' pointer-events:none;">'
     )
-    for _m in range(4):
+    for _m in range(cantidad):
         _top_ini = random.randint(-10, 35)
         _left_ini = random.randint(55, 125)
         _delay_m = round(random.uniform(0, 7), 2)
         _dur_m = round(random.uniform(5, 8), 2)
-        _tam = random.randint(60, 100)
+        _tam = random.randint(100, 150)
         _html_meteoros += f"""
         <div style="position:absolute; top:{_top_ini}%; left:{_left_ini}%;
             width:{_tam}px; height:{_tam}px;
@@ -6145,6 +6301,10 @@ if opcion == "⏰ Marcar Asistencia":
     </style>
     """
     render_html(_html_meteoros)
+
+
+if opcion == "⏰ Marcar Asistencia":
+    render_lluvia_meteoritos()
 
     render_html(
         f"""
@@ -6585,7 +6745,19 @@ if opcion == "⏰ Marcar Asistencia":
                     h_salida_ofic = datetime.strptime(
                         hora_salida_oficial, "%H:%M:%S"
                     ).time()
-                    if now.time() > h_salida_ofic:
+                    # CORREGIDO: antes 'estado' se quedaba SIEMPRE en
+                    # "Puntual" para la Salida (nunca se tocaba), sin
+                    # importar la hora real de salida — por eso la
+                    # bitácora mostraba "Puntual" sin que significara
+                    # nada de verdad. Ahora sí refleja si salió a su
+                    # hora oficial o después (Puntual) o antes
+                    # (Temprano) — igual que ya calcula el calendario y
+                    # las tarjetas del Dashboard, para que todo el
+                    # sistema diga lo mismo.
+                    if now.time() < h_salida_ofic:
+                        estado = "Temprano"
+                    else:
+                        estado = "Puntual"
                         t1 = datetime.combine(datetime.today(), now.time())
                         t2 = datetime.combine(datetime.today(), h_salida_ofic)
                         minutos_extra = int((t1 - t2).total_seconds() / 60)
@@ -6709,7 +6881,55 @@ if opcion == "⏰ Marcar Asistencia":
 
 elif opcion == "🔐 Panel de Gestión / Admin":
     if not st.session_state.autenticado:
-        st.title("🔐 Acceso Administrativo")
+        # Mismo lenguaje visual que la pantalla de Marcar Asistencia
+        # (anillo cyan-violeta con pulso) — para que el Panel de
+        # Gestión se sienta parte del mismo sistema, no una pantalla
+        # aparte. Es una versión FIJA (no de una sola vez), 100% CSS.
+        render_html("""
+        <div style="display:flex; justify-content:center; margin-bottom:8px;">
+            <div style="position:relative; width:86px; height:86px;">
+                <div style="position:absolute; inset:0; border-radius:50%;
+                    background:radial-gradient(circle, rgba(88,166,255,0.22), transparent 70%);
+                    animation:fac-pulso-admin 2.2s ease-out infinite;"></div>
+                <svg width="86" height="86" viewBox="0 0 86 86"
+                    style="position:absolute; top:0; left:0;">
+                    <circle cx="43" cy="43" r="34" fill="none"
+                        stroke="rgba(255,255,255,0.10)" stroke-width="4"/>
+                    <circle cx="43" cy="43" r="34" fill="none"
+                        stroke="url(#fac-grad-admin)" stroke-width="4"
+                        stroke-linecap="round" stroke-dasharray="70 144"
+                        style="animation:fac-girar-admin 3.5s linear infinite;
+                            transform-origin:43px 43px;"/>
+                    <defs>
+                        <linearGradient id="fac-grad-admin" x1="0" y1="0" x2="1" y2="1">
+                            <stop offset="0%" stop-color="#58a6ff"/>
+                            <stop offset="100%" stop-color="#a371f7"/>
+                        </linearGradient>
+                    </defs>
+                </svg>
+                <div style="position:absolute; inset:0; display:flex;
+                    align-items:center; justify-content:center;
+                    font-size:32px;
+                    filter:drop-shadow(0 0 10px rgba(88,166,255,0.55));">
+                    🔐
+                </div>
+            </div>
+        </div>
+        <style>
+        @keyframes fac-pulso-admin {
+            0% { transform:scale(0.85); opacity:0.8; }
+            100% { transform:scale(1.4); opacity:0; }
+        }
+        @keyframes fac-girar-admin {
+            from { transform:rotate(0deg); }
+            to { transform:rotate(360deg); }
+        }
+        </style>
+        """)
+        st.markdown(
+            "<h2 style='text-align:center;'>Acceso Administrativo</h2>",
+            unsafe_allow_html=True,
+        )
         cargar_pin_developer_global(supabase)
 
         df_prod = df_empresas[df_empresas["entorno"] != "DEV"]
@@ -6794,6 +7014,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                     # candado de la barra lateral.
                     st.error("PIN Incorrecto.")
     else:
+        render_lluvia_meteoritos(cantidad=3)
         from streamlit_autorefresh import st_autorefresh
 
         # --- Auto-refresh inteligente ---
@@ -6995,29 +7216,6 @@ elif opcion == "🔐 Panel de Gestión / Admin":
             )
             prefix_filtro = f"{anio_sel}-{mes_sel:02d}"
             num_dias_mes_gen = calendar.monthrange(anio_sel, mes_sel)[1]
-
-            # --- NUEVO (solo visual): tarjeta de resumen global, todas las
-            # sedes juntas, antes del detalle por local. No reemplaza ni
-            # modifica ninguno de los cálculos existentes por sede. ---
-            df_mes_general = df_asistencia[
-                df_asistencia["Fecha"].astype(str).str.startswith(prefix_filtro)
-            ]
-            with st.container(border=True):
-                st.markdown("##### 🌐 Resumen General — Todas las Sedes")
-                gg1, gg2, gg3, gg4 = st.columns(4)
-                gg1.metric("Personal Total", f"{len(df_empleados)} emps")
-                gg2.metric(
-                    "Puntualidades del Mes",
-                    f"{df_mes_general[df_mes_general['Estado'] == 'Puntual']['Fecha'].nunique() if not df_mes_general.empty else 0} días",
-                )
-                gg3.metric(
-                    "Tardanzas del Mes",
-                    f"{df_mes_general[df_mes_general['Estado'] == 'Tardanza']['Fecha'].nunique() if not df_mes_general.empty else 0} días",
-                )
-                gg4.metric(
-                    "Minutos Extras del Mes",
-                    f"{int(df_mes_general['Horas Extra (min)'].sum()) if not df_mes_general.empty else 0} min",
-                )
 
             st.divider()
 
@@ -7405,23 +7603,90 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                         fechas_disponibles,
                                     )
 
+                                    # Entrada y Salida son registros
+                                    # DISTINTOS del mismo día — se
+                                    # editan por separado, cada una con
+                                    # sus propios valores (antes se
+                                    # aplicaba lo mismo a ambas de
+                                    # golpe, lo cual era un error si
+                                    # tenían Estado/minutos distintos).
+                                    df_dia_edit = df_editables[
+                                        df_editables["Fecha"] == f_edit_sel
+                                    ]
+                                    tipos_disponibles_dia = list(
+                                        df_dia_edit["Tipo Marcación"].unique()
+                                    )
+                                    tipo_a_editar = st.radio(
+                                        "¿Cuál marcación de ese día?",
+                                        tipos_disponibles_dia,
+                                        horizontal=True,
+                                    )
+                                    fila_actual_edit = df_dia_edit[
+                                        df_dia_edit["Tipo Marcación"]
+                                        == tipo_a_editar
+                                    ].iloc[0]
+
+                                    if st.session_state.developer_global:
+                                        st.caption(
+                                            "🧪 Developer: también puedes"
+                                            " corregir la HORA exacta en"
+                                            " que se marcó — Admin y"
+                                            " SuperAdmin no ven este campo."
+                                        )
+                                        _hora_actual_edit = fila_actual_edit.get(
+                                            "Hora Registrada", "08:00:00"
+                                        )
+                                        try:
+                                            _hora_actual_t = datetime.strptime(
+                                                str(_hora_actual_edit), "%H:%M:%S"
+                                            ).time()
+                                        except Exception:
+                                            _hora_actual_t = time(8, 0, 0)
+                                        nueva_hora_registrada = st.time_input(
+                                            "Hora exacta de la marcación:",
+                                            value=_hora_actual_t,
+                                        )
+                                    else:
+                                        nueva_hora_registrada = None
+
                                     col_e_m1, col_e_m2, col_e_m3 = st.columns(3)
                                     with col_e_m1:
+                                        _idx_estado_actual = (
+                                            ["Puntual", "Tardanza", "Falta", "Temprano"]
+                                            .index(fila_actual_edit.get("Estado", "Puntual"))
+                                            if fila_actual_edit.get("Estado") in
+                                            ["Puntual", "Tardanza", "Falta", "Temprano"]
+                                            else 0
+                                        )
                                         nuevo_est = st.selectbox(
                                             "Estado:",
-                                            ["Puntual", "Tardanza", "Falta"],
+                                            ["Puntual", "Tardanza", "Falta", "Temprano"],
+                                            index=_idx_estado_actual,
+                                            help=(
+                                                "'Temprano' aplica solo a"
+                                                " Salida (se fue antes de"
+                                                " su hora oficial)."
+                                            ),
                                         )
                                     with col_e_m2:
                                         nuevos_min_t = st.number_input(
                                             "Min. Tardanza:",
                                             min_value=0,
-                                            value=0,
+                                            value=int(
+                                                fila_actual_edit.get(
+                                                    "Minutos Tardanza", 0
+                                                ) or 0
+                                            ),
                                         )
                                     with col_e_m3:
                                         nuevos_min_e = st.number_input(
                                             "Min. Extra:",
                                             min_value=0,
-                                            value=0,
+                                            value=int(
+                                                fila_actual_edit.get(
+                                                    "Horas Extra (min)", 0
+                                                ) or 0
+                                            ),
                                         )
 
                                     if st.button("💾 Guardar Ajuste Manual"):
@@ -7450,6 +7715,10 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                                     df_asist_fresco["Fecha"]
                                                     == f_edit_sel
                                                 )
+                                                & (
+                                                    df_asist_fresco["Tipo Marcación"]
+                                                    == tipo_a_editar
+                                                )
                                             ].index
 
                                             for idx_mod in indices:
@@ -7464,13 +7733,21 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                                     idx_mod,
                                                     "Horas Extra (min)",
                                                 ] = nuevos_min_e
+                                                if nueva_hora_registrada is not None:
+                                                    df_asist_fresco.at[
+                                                        idx_mod,
+                                                        "Hora Registrada",
+                                                    ] = nueva_hora_registrada.strftime(
+                                                        "%H:%M:%S"
+                                                    )
 
                                             df_asist_fresco.to_csv(
                                                 CSV_ASISTENCIA, index=False
                                             )
                                         st.success(
-                                            f"Registro del día {f_edit_sel}"
-                                            " actualizado con éxito."
+                                            f"Registro de {tipo_a_editar} del"
+                                            f" día {f_edit_sel} actualizado"
+                                            " con éxito."
                                         )
                                         st.rerun()
                                 else:
@@ -7498,32 +7775,6 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                     )
                 ]
 
-                if not df_asist_emp.empty:
-                    total_puntual = df_asist_emp[
-                        df_asist_emp["Estado"] == "Puntual"
-                    ]["Fecha"].nunique()
-                    total_tardanza = df_asist_emp[
-                        df_asist_emp["Estado"] == "Tardanza"
-                    ]["Fecha"].nunique()
-                    minutos_tardanza_acumulados = df_asist_emp[
-                        "Minutos Tardanza"
-                    ].sum()
-                    minutos_extra_acumulados = df_asist_emp[
-                        "Horas Extra (min)"
-                    ].sum()
-                else:
-                    total_puntual = 0
-                    total_tardanza = 0
-                    minutos_tardanza_acumulados = 0
-                    minutos_extra_acumulados = 0
-
-                horas_tardanza_dec = round(
-                    minutos_tardanza_acumulados / 60.0, 2
-                )
-                formato_hhmm_tardanza = min_a_formato_horas(
-                    minutos_tardanza_acumulados
-                )
-
                 with st.container(border=True):
                     st.markdown(
                         f"#### 📅 Calendario de Asistencia — {mes_ind_sel} {anio_ind_sel}"
@@ -7535,15 +7786,20 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                         " por celda, hasta la fecha de hoy."
                     )
 
-                    # Recalcular totales del mes (para el resumen chico
-                    # de arriba del calendario) — misma info que antes
-                    # daban las 4 tarjetas, ahora en una sola línea.
+                    # Solo Entrada cuenta para Puntual/Tardanza (la
+                    # Salida también puede decir "Puntual", y sin este
+                    # filtro un día con Entrada Tardanza + Salida
+                    # Puntual se contaba en los dos a la vez).
+                    _df_asist_emp_entrada = (
+                        df_asist_emp[df_asist_emp["Tipo Marcación"] == "Entrada"]
+                        if not df_asist_emp.empty else df_asist_emp
+                    )
                     if not df_asist_emp.empty:
-                        total_puntual = df_asist_emp[
-                            df_asist_emp["Estado"] == "Puntual"
+                        total_puntual = _df_asist_emp_entrada[
+                            _df_asist_emp_entrada["Estado"] == "Puntual"
                         ]["Fecha"].nunique()
-                        total_tardanza = df_asist_emp[
-                            df_asist_emp["Estado"] == "Tardanza"
+                        total_tardanza = _df_asist_emp_entrada[
+                            _df_asist_emp_entrada["Estado"] == "Tardanza"
                         ]["Fecha"].nunique()
                         minutos_tardanza_acumulados = df_asist_emp[
                             "Minutos Tardanza"
@@ -7576,6 +7832,18 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                     for _ in range(_relleno_inicial):
                         _celdas_html.append('<div style="background:transparent;"></div>')
 
+                    # Horario personalizado de ESTE trabajador (si tiene)
+                    # — para que el calendario respete sus días
+                    # específicos, no solo la regla general de la
+                    # empresa (el "enlace" pedido entre Personalizar
+                    # Horario y el Reporte de cada trabajador).
+                    try:
+                        _h_personal_cal = json.loads(
+                            emp_info.get("horario_personalizado", "{}") or "{}"
+                        )
+                    except Exception:
+                        _h_personal_cal = {}
+
                     for d in range(1, num_dias_m + 1):
                         f_eval = date(anio_ind_sel, m_num, d)
                         f_str = f_eval.strftime("%Y-%m-%d")
@@ -7584,6 +7852,16 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                         ]
                         ent_reg = df_dia_emp[df_dia_emp["Tipo Marcación"] == "Entrada"]
                         sal_reg = df_dia_emp[df_dia_emp["Tipo Marcación"] == "Salida"]
+
+                        _nombre_dia_cal = DIAS_SEMANA_MAP[f_eval.weekday()]
+                        if _nombre_dia_cal in _h_personal_cal:
+                            _es_laborable_para_el = _h_personal_cal[
+                                _nombre_dia_cal
+                            ].get("activo", True)
+                        else:
+                            _es_laborable_para_el = (
+                                _nombre_dia_cal in st.session_state.dias_laborables
+                            )
 
                         _hora_ent_cal, _hora_sal_cal = "", ""
                         if not ent_reg.empty:
@@ -7597,7 +7875,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                         elif f_str in FERIADOS_OFICIALES:
                             color_borde = "#5865f2"
                             etiqueta_dia = "FERIADO"
-                        elif DIAS_SEMANA_MAP[f_eval.weekday()] not in st.session_state.dias_laborables:
+                        elif not _es_laborable_para_el:
                             color_borde = "#3a3f4b"
                             etiqueta_dia = "DESCANSO"
                         else:
@@ -8234,10 +8512,34 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                         st.caption(
                             "Define horarios específicos por día para este"
                             " trabajador (Sobrescribe el horario de la sede)."
+                            " Los campos ya vienen precargados con el"
+                            " horario normal de su sede como guía — solo"
+                            " cambia los días que necesites ajustar."
+                        )
+
+                        # Horario de la sede de este trabajador, para
+                        # usarlo como valor de partida en cada día que
+                        # todavía no tenga un horario personalizado
+                        # guardado (antes se precargaba siempre
+                        # 08:00-17:00 fijo, sin relación con su sede
+                        # real).
+                        _sede_emp_h = emp_h_row["sede_principal"]
+                        _datos_sede_h = df_sedes[
+                            df_sedes["nombre_sede"] == _sede_emp_h
+                        ]
+                        _h_ent_sede_default = (
+                            _datos_sede_h["hora_entrada"].values[0]
+                            if not _datos_sede_h.empty
+                            else "08:00:00"
+                        )
+                        _h_sal_sede_default = (
+                            _datos_sede_h["hora_salida"].values[0]
+                            if not _datos_sede_h.empty
+                            else "17:00:00"
                         )
 
                         nuevo_h_dict = {}
-                        cols_dias = st.columns(6)
+                        cols_dias = st.columns(7)
                         dias_semana = [
                             "Lunes",
                             "Martes",
@@ -8245,6 +8547,7 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                             "Jueves",
                             "Viernes",
                             "Sábado",
+                            "Domingo",
                         ]
 
                         for idx_d, dia in enumerate(dias_semana):
@@ -8253,15 +8556,16 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 activo = st.checkbox(
                                     "Aplica",
                                     value=h_dict_actual.get(dia, {}).get(
-                                        "activo", True
+                                        "activo",
+                                        dia in st.session_state.dias_laborables,
                                     ),
                                     key=f"chk_{dia}",
                                 )
                                 val_ent = h_dict_actual.get(dia, {}).get(
-                                    "entrada", "08:00:00"
+                                    "entrada", _h_ent_sede_default
                                 )
                                 val_sal = h_dict_actual.get(dia, {}).get(
-                                    "salida", "17:00:00"
+                                    "salida", _h_sal_sede_default
                                 )
 
                                 t_ent = st.time_input(
@@ -8375,6 +8679,51 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                 "Todas las tardanzas se convierten a formato decimal"
                                 " y horas para consolidar informes."
                             )
+
+                    with st.container(border=True):
+                        st.markdown("#### 📆 Días Laborables de la Empresa")
+                        st.caption(
+                            "Marca los días en que esta empresa SÍ trabaja"
+                            " normalmente — se usa para calcular faltas,"
+                            " el calendario de asistencia, y ahora incluye"
+                            " el Domingo como una opción más (antes nunca"
+                            " se podía activar)."
+                        )
+                        _dias_orden = [
+                            "Lunes", "Martes", "Miércoles", "Jueves",
+                            "Viernes", "Sábado", "Domingo",
+                        ]
+                        _cols_dias = st.columns(7)
+                        _dias_marcados = []
+                        for _idx_d, _dia_nom in enumerate(_dias_orden):
+                            with _cols_dias[_idx_d]:
+                                _marcado = st.checkbox(
+                                    _dia_nom,
+                                    value=(
+                                        _dia_nom
+                                        in st.session_state.dias_laborables
+                                    ),
+                                    key=f"chk_dia_lab_{_dia_nom}",
+                                )
+                                if _marcado:
+                                    _dias_marcados.append(_dia_nom)
+
+                        if st.button("💾 Guardar Días Laborables"):
+                            st.session_state.dias_laborables = _dias_marcados
+                            if supabase:
+                                try:
+                                    guardar_configuracion_sistema(
+                                        supabase,
+                                        st.session_state.empresa_id,
+                                        dias_laborables=json.dumps(
+                                            _dias_marcados
+                                        ),
+                                    )
+                                    st.success(
+                                        "✅ Días laborables actualizados."
+                                    )
+                                except Exception as e:
+                                    st.error(f"No se pudo guardar: {e}")
 
                 with subtab_respaldo:
                     st.markdown("#### ☁️ Panel Maestro de SuperAdmin / Respaldo")
