@@ -233,6 +233,179 @@ def detectar_rostro_en_foto(img_file):
         img_file.seek(0)
 
 
+# =====================================================================
+# CÁMARA ALTERNATIVA (Custom Component v2) — respaldo para equipos
+# donde el widget nativo st.camera_input se queda "pidiendo cámara" sin
+# responder nunca (visto de forma repetida en varios Samsung, incluso
+# con los permisos ya concedidos). Pide la cámara con restricciones
+# FLEXIBLES (sin forzar cámara exacta ni resolución exacta), que es
+# justo lo que suele hacer fallar la cámara en esos equipos. Requiere
+# Streamlit >= 1.51.0 (donde se introdujo st.components.v2); en
+# versiones más viejas simplemente no se muestra esta opción y el
+# trabajador sigue teniendo el respaldo de "subir foto" (más abajo).
+# =====================================================================
+_CAMARA_ALT_DISPONIBLE = hasattr(st.components, "v2")
+
+if _CAMARA_ALT_DISPONIBLE:
+    _CAMARA_ALT_HTML = """
+    <div id="camwrap" style="max-width:100%;">
+      <video id="camvideo" autoplay playsinline muted
+             style="width:100%;border-radius:12px;background:#111;display:block;"></video>
+      <canvas id="camcanvas" style="display:none;"></canvas>
+      <div id="camerror" style="color:#ff6b6b;font-size:0.85rem;margin-top:6px;"></div>
+      <div style="display:flex;gap:8px;margin-top:8px;">
+        <button id="btncapturar" type="button"
+                style="flex:1;padding:10px;border-radius:8px;border:none;
+                       background:#22c55e;color:white;font-weight:600;cursor:pointer;">
+          📸 Tomar foto
+        </button>
+        <button id="btnreintentar" type="button" style="display:none;flex:1;padding:10px;
+                border-radius:8px;border:none;background:#3b82f6;color:white;
+                font-weight:600;cursor:pointer;">
+          🔄 Reintentar cámara
+        </button>
+      </div>
+      <img id="camfoto" style="width:100%;border-radius:12px;display:none;margin-top:8px;" />
+      <button id="btnrepetir" type="button" style="display:none;width:100%;padding:10px;
+              margin-top:8px;border-radius:8px;border:1px solid #888;background:transparent;
+              color:inherit;cursor:pointer;">
+        ↩️ Tomar otra foto
+      </button>
+    </div>
+    """
+
+    _CAMARA_ALT_JS = """
+    export default function(component) {
+      const { setTriggerValue, parentElement } = component;
+      const video = parentElement.querySelector('#camvideo');
+      const canvas = parentElement.querySelector('#camcanvas');
+      const errBox = parentElement.querySelector('#camerror');
+      const btnCapturar = parentElement.querySelector('#btncapturar');
+      const btnReintentar = parentElement.querySelector('#btnreintentar');
+      const btnRepetir = parentElement.querySelector('#btnrepetir');
+      const foto = parentElement.querySelector('#camfoto');
+
+      let stream = null;
+
+      async function iniciarCamara() {
+        errBox.textContent = '';
+        btnReintentar.style.display = 'none';
+        video.style.display = 'block';
+        btnCapturar.style.display = 'block';
+        foto.style.display = 'none';
+        btnRepetir.style.display = 'none';
+
+        try {
+          // Constraints deliberadamente flexibles: sin "exact" y sin
+          // resolución forzada. Pedir valores exactos es justo lo que
+          // hace fallar la cámara en varios equipos Samsung de gama
+          // media/baja (error OverconstrainedError silencioso).
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'user' },
+            audio: false,
+          });
+          video.srcObject = stream;
+        } catch (e1) {
+          try {
+            // Reintento sin pedir cámara frontal específica, por si el
+            // equipo no soporta bien el constraint facingMode.
+            stream = await navigator.mediaDevices.getUserMedia({
+              video: true,
+              audio: false,
+            });
+            video.srcObject = stream;
+          } catch (e2) {
+            errBox.textContent =
+              'No se pudo abrir la cámara (' +
+              (e2.name || e2.message || 'error desconocido') +
+              '). Revisa los permisos de cámara del navegador o usa la' +
+              ' opción de subir foto.';
+            btnCapturar.style.display = 'none';
+            btnReintentar.style.display = 'block';
+          }
+        }
+      }
+
+      function detenerCamara() {
+        if (stream) {
+          stream.getTracks().forEach((t) => t.stop());
+          stream = null;
+        }
+      }
+
+      btnCapturar.onclick = () => {
+        if (!video.videoWidth) return;
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        canvas.getContext('2d').drawImage(video, 0, 0);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        foto.src = dataUrl;
+        foto.style.display = 'block';
+        video.style.display = 'none';
+        btnCapturar.style.display = 'none';
+        btnRepetir.style.display = 'block';
+        detenerCamara();
+        setTriggerValue('foto_b64', dataUrl);
+      };
+
+      btnRepetir.onclick = () => {
+        setTriggerValue('foto_b64', null);
+        iniciarCamara();
+      };
+
+      btnReintentar.onclick = () => {
+        iniciarCamara();
+      };
+
+      iniciarCamara();
+    }
+    """
+
+    _camara_alternativa_component = st.components.v2.component(
+        "camara_alternativa_marcacion",
+        html=_CAMARA_ALT_HTML,
+        js=_CAMARA_ALT_JS,
+    )
+
+
+def capturar_foto_camara_alternativa(key=None):
+    """Widget de cámara alternativo (Custom Component v2) para cuando
+    st.camera_input no responde en el equipo del trabajador. Devuelve un
+    objeto tipo archivo (BytesIO con .size, igual que st.camera_input)
+    listo para usarse con validar_foto_captura/detectar_rostro_en_foto/
+    Image.open, o None si todavía no hay foto tomada.
+
+    Si esta instalación usa una versión de Streamlit anterior a 1.51.0
+    (sin Components v2), devuelve None directamente sin mostrar nada —
+    en ese caso solo queda disponible el respaldo de "subir foto".
+    """
+    if not _CAMARA_ALT_DISPONIBLE:
+        return None
+    try:
+        resultado = _camara_alternativa_component(
+            on_foto_b64_change=lambda: None, key=key
+        )
+    except Exception as _e_cam_alt:
+        logger.warning(
+            f"Cámara alternativa no disponible en este entorno: {_e_cam_alt}"
+        )
+        return None
+
+    foto_b64 = getattr(resultado, "foto_b64", None)
+    if not foto_b64:
+        return None
+    try:
+        _cabecera, datos_b64 = foto_b64.split(",", 1)
+        foto_bytes = base64.b64decode(datos_b64)
+    except Exception:
+        return None
+
+    archivo = io.BytesIO(foto_bytes)
+    archivo.size = len(foto_bytes)
+    archivo.name = "foto_marcacion.jpg"
+    return archivo
+
+
 def enviar_marcacion_supabase(empresa_id, dni, nombre, fecha, hora, tipo, foto_url="", gps=""):
     if not supabase:
         return False
@@ -903,12 +1076,39 @@ def render_gate_consentimiento(supabase, datos_emp):
                 fecha_consentimiento = ahora_peru().strftime(
                     "%Y-%m-%d %H:%M:%S"
                 )
-                datos_consentimiento = {
+                # OJO: antes solo se mandaban empresa_id/dni/consentimiento.
+                # Si el trabajador todavía no existía como fila en la
+                # Supabase de este repositorio (solo estaba en el CSV
+                # local), el upsert creaba una fila nueva sin "nombre" —
+                # y esa columna no admite nulos, así que Supabase
+                # rechazaba el guardado. Se incluyen aquí los datos base
+                # que ya se conocen localmente para que, si hay que crear
+                # la fila, quede completa en vez de a medias.
+                datos_consentimiento = {}
+                for _campo_base in (
+                    "nombre",
+                    "cargo",
+                    "sede_principal",
+                    "fecha_ingreso",
+                ):
+                    _valor_base = (
+                        datos_emp.get(_campo_base)
+                        if hasattr(datos_emp, "get")
+                        else None
+                    )
+                    try:
+                        _valor_es_nulo = pd.isna(_valor_base)
+                    except (TypeError, ValueError):
+                        _valor_es_nulo = _valor_base is None
+                    if not _valor_es_nulo and _valor_base not in (None, ""):
+                        datos_consentimiento[_campo_base] = _valor_base
+
+                datos_consentimiento.update({
                     "empresa_id": st.session_state.empresa_id,
                     "dni": str(datos_emp["dni"]),
                     "consentimiento_aceptado": True,
                     "consentimiento_fecha": fecha_consentimiento,
-                }
+                })
                 if supabase:
                     try:
                         guardar_empleado_supabase(
@@ -937,6 +1137,25 @@ def render_gate_consentimiento(supabase, datos_emp):
                             )
                         ].index
                         if len(idx_c) > 0:
+                            # FIX: en pandas moderno, si la columna quedó
+                            # con un dtype "estricto" (ej. todo NaN → se
+                            # infiere float64), asignar directo un bool o
+                            # texto con .at[] lanza TypeError en vez de
+                            # convertir sola la columna como antes. Se
+                            # fuerza a "object" primero para que acepte
+                            # cualquier tipo, igual que antes.
+                            for _col_consent in (
+                                "consentimiento_aceptado",
+                                "consentimiento_fecha",
+                            ):
+                                if _col_consent in df_emp_full.columns:
+                                    df_emp_full[_col_consent] = (
+                                        df_emp_full[_col_consent].astype(
+                                            object
+                                        )
+                                    )
+                                else:
+                                    df_emp_full[_col_consent] = None
                             df_emp_full.at[
                                 idx_c[0], "consentimiento_aceptado"
                             ] = True
@@ -981,62 +1200,191 @@ def render_gate_consentimiento(supabase, datos_emp):
 # CUALQUIER empresa nueva, antes de que alguien configure un logo
 # propio distinto desde el panel developer.
 LOGO_DEFAULT_EMBEBIDO = (
-    "data:image/webp;base64,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"
+    "data:image/webp;base64,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"
 )
 
 
@@ -6588,7 +6936,68 @@ if opcion == "⏰ Marcar Asistencia":
                 " marcación."
             )
 
+            # --- RESPALDO: por si el recuadro de arriba se queda en
+            # gris/cargando sin pedir el permiso (visto sobre todo en
+            # varios equipos Samsung) — no reemplaza la cámara de
+            # arriba, es una alternativa si esa falla. Solo queda la
+            # cámara alternativa en vivo (sin opción de subir foto).
+            #
+            # IMPORTANTE: el valor que devuelve el componente alternativo
+            # es un "trigger" de un solo uso —Streamlit lo resetea a
+            # None en el siguiente rerun (por ejemplo, apenas se pide el
+            # GPS más abajo)—, así que hay que guardarlo en
+            # session_state en el momento en que llega, o se pierde la
+            # foto justo cuando se necesita para desbloquear el GPS.
+            _dni_actual = str(datos_emp.get("dni", ""))
+            _clave_cache_foto_alt = f"foto_alt_bytes_{_dni_actual}"
+
+            if img_file is None:
+                _foto_alt_guardada = st.session_state.get(
+                    _clave_cache_foto_alt
+                )
+                if _foto_alt_guardada is not None:
+                    # Ya se había tomado una foto con la cámara
+                    # alternativa en un rerun anterior: se reusa en vez
+                    # de perderla.
+                    _archivo_cache = io.BytesIO(_foto_alt_guardada)
+                    _archivo_cache.size = len(_foto_alt_guardada)
+                    _archivo_cache.name = "foto_marcacion.jpg"
+                    img_file = _archivo_cache
+                    st.success("📸 Foto tomada con la cámara alternativa.")
+                    if st.button(
+                        "🔄 Tomar otra foto (cámara alternativa)",
+                        key=f"cam_alt_retomar_{_dni_actual}",
+                    ):
+                        st.session_state.pop(_clave_cache_foto_alt, None)
+                        st.rerun()
+                else:
+                    with st.expander(
+                        "📷 ¿La cámara de arriba no responde o se queda"
+                        " cargando? Toca aquí"
+                    ):
+                        img_file_alt = capturar_foto_camara_alternativa(
+                            key=f"cam_alt_{_dni_actual}"
+                        )
+                        if img_file_alt is not None:
+                            # Se guarda de inmediato en session_state
+                            # para que sobreviva al siguiente rerun (el
+                            # que pide el GPS), y se usa ya mismo en
+                            # este rerun para no perder tiempo.
+                            img_file_alt.seek(0)
+                            st.session_state[_clave_cache_foto_alt] = (
+                                img_file_alt.read()
+                            )
+                            img_file_alt.seek(0)
+                            img_file = img_file_alt
+
         foto_ya_tomada = img_file is not None
+
+        if not foto_ya_tomada:
+            # Sin foto todavía (ni de la cámara nativa ni de la
+            # alternativa): se limpia cualquier caché de foto alt.
+            # vieja, para no arrastrar una foto de una marcación
+            # anterior a la siguiente.
+            st.session_state.pop(_clave_cache_foto_alt, None)
 
         if foto_ya_tomada:
             # Se pide UNA sola vez por foto (se guarda en cache en
@@ -6874,6 +7283,12 @@ if opcion == "⏰ Marcar Asistencia":
                         f"¡Marcación de {tipo_marcacion} registrada "
                         "localmente!"
                     )
+
+                # Se limpia la caché de la foto de la cámara alternativa
+                # (si se usó) para que la próxima marcación —por
+                # ejemplo, la Salida después de esta Entrada— pida una
+                # foto nueva en vez de reusar esta.
+                st.session_state.pop(_clave_cache_foto_alt, None)
 
                 # --- Animación de marcación exitosa: sello (100% CSS,
                 # confiable) con su propio sonido de "golpe de sello" —
@@ -8277,6 +8692,26 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                                 )
                                             ].index
                                             if len(idx_e) > 0:
+                                                # FIX (mismo bug de
+                                                # dtype estricto que en
+                                                # el consentimiento): se
+                                                # fuerzan a "object" las
+                                                # columnas que se van a
+                                                # tocar antes de asignar,
+                                                # para que acepten
+                                                # cualquier tipo de valor.
+                                                for campo in (
+                                                    datos_actualizados.keys()
+                                                ):
+                                                    if (
+                                                        campo
+                                                        in df_emp_full.columns
+                                                    ):
+                                                        df_emp_full[campo] = (
+                                                            df_emp_full[
+                                                                campo
+                                                            ].astype(object)
+                                                        )
                                                 for campo, valor in (
                                                     datos_actualizados.items()
                                                 ):
@@ -8642,6 +9077,15 @@ elif opcion == "🔐 Panel de Gestión / Admin":
                                         & (df_emp_full["dni"] == dni_h)
                                     ].index
                                     if len(idx_h) > 0:
+                                        if (
+                                            "horario_personalizado"
+                                            in df_emp_full.columns
+                                        ):
+                                            df_emp_full[
+                                                "horario_personalizado"
+                                            ] = df_emp_full[
+                                                "horario_personalizado"
+                                            ].astype(object)
                                         df_emp_full.at[
                                             idx_h[0], "horario_personalizado"
                                         ] = horario_json
